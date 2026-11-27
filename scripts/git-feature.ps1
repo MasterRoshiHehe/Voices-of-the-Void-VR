@@ -10,8 +10,9 @@
 
     commit  Snapshot the listed paths, as they are on disk, onto feature/<topic>
             (created from dev if missing). Other paths keep the branch's previous content.
-    merge   Merge feature/<topic> into dev (merge commit; stops on conflicts), then refresh
-            the shared index from dev. Files on disk are not touched.
+    merge   Merge feature/<topic> into dev (merge commit; stops on conflicts). Takes the branch
+            from origin if it was pushed from elsewhere. Files the merge brings in are written
+            to disk only where nobody here has edited them (same rules as sync).
     sync    Bring origin/dev into local dev (fast-forward or merge commit; STATUS.md merges by
             union, see .gitattributes). Files on disk that the incoming commits change are
             updated only where no thread has edited them; where a thread has, its edits are kept
@@ -115,10 +116,13 @@ function Sync-Dev {
         $new = New-Commit (($mt | Select-Object -First 1).Trim()) @($local, $remote) "Merge origin/$Base into $Base"
         Write-Output "merged origin/$Base into $Base as $new"
     }
-    $changed = @(& git diff --no-renames --name-only $local $new)
-    $onDev = ((& git symbolic-ref -q --short HEAD) -eq $Base)
     Invoke-Git update-ref -m "git-feature sync" "refs/heads/$Base" $new $local | Out-Null
-    if (-not $onDev) { return }
+    Update-Disk $local $new
+}
+function Update-Disk([string]$local, [string]$new) {
+    # dev moved from $local to $new: bring the shared folder's files along without losing on-disk edits
+    if ((& git symbolic-ref -q --short HEAD) -ne $Base) { return }
+    $changed = @(& git diff --no-renames --name-only $local $new)
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("git-feature-sync-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tmp | Out-Null
     $kept = @()
@@ -206,6 +210,23 @@ switch ($Action) {
     'merge' {
         Assert-FeatureBranch
         if ($Push) { Sync-Dev }
+        # pick up the branch from origin if it was pushed from elsewhere (or is ahead there)
+        $env:GCM_INTERACTIVE = 'never'
+        & git fetch -q origin "+refs/heads/${Branch}:refs/remotes/origin/$Branch" 2>$null
+        $remoteFeat = Get-Blob "refs/remotes/origin/$Branch"
+        $feat = Get-Ref $Branch
+        if ($remoteFeat) {
+            if (-not $feat) {
+                Invoke-Git update-ref "refs/heads/$Branch" $remoteFeat '0000000000000000000000000000000000000000' | Out-Null
+                Write-Output "took $Branch from origin ($remoteFeat)"
+            } else {
+                & git merge-base --is-ancestor $feat $remoteFeat
+                if ($LASTEXITCODE -eq 0 -and $feat -ne $remoteFeat) {
+                    Invoke-Git update-ref "refs/heads/$Branch" $remoteFeat $feat | Out-Null
+                    Write-Output "fast-forwarded $Branch to origin ($remoteFeat)"
+                }
+            }
+        }
         $feat = Get-Ref $Branch
         $baseSha = Get-Ref $Base
         if (-not $feat) { throw "branch $Branch not found" }
@@ -222,8 +243,7 @@ switch ($Action) {
         if (-not $Message) { $Message = "Merge $Branch into $Base" }
         $commit = New-Commit $tree @($baseSha, $feat) $Message
         Invoke-Git update-ref -m "git-feature merge $Branch" "refs/heads/$Base" $commit $baseSha | Out-Null
-        $head = & git symbolic-ref -q --short HEAD
-        if ($head -eq $Base) { Invoke-Git reset -q | Out-Null }   # index follows dev; files on disk are not touched
+        Update-Disk $baseSha $commit   # files from a branch made elsewhere appear on disk; local edits are kept
         Write-Output "merged $Branch into $Base as $commit"
         if ($Push) { Push-Branches @($Branch, $Base) }
     }
