@@ -118,8 +118,37 @@ public:
             return;
         }
         if (!blocked_.empty()) { event("unblocked (was " + blocked_ + ")"); blocked_.clear(); }
+        mask_for_pointer(p);
         mapper_.update(p, t);
         smooth_turn(p, t);
+    }
+
+    // Menu laser pointer (main-menu thread's votv_pointer.dll) owns the pointing hand's trigger, stick and A
+    // while a flat menu is shown. Those inputs stay masked here until physically released after it lets go.
+    bool pointer_active() {
+        HMODULE m = GetModuleHandleW(L"votv_pointer.dll");
+        if (m == nullptr) return false;
+        using Fn = bool (*)();
+        auto fn = (Fn)GetProcAddress(m, "votv_pointer_active");
+        return fn != nullptr && fn();
+    }
+    void mask_for_pointer(votv::PadState& p) {
+        const bool lh = mapper_.s.left_handed;
+        float& trig = lh ? p.lt : p.rt;
+        float& sx = lh ? p.lx : p.rx;
+        float& sy = lh ? p.ly : p.ry;
+        const uint16_t btn = lh ? votv::PAD_X : votv::PAD_A;
+        const bool on = pointer_active();
+        if (on != pointer_on_) { pointer_on_ = on; event(on ? "pointer active: trigger/stick/A masked" : "pointer inactive"); }
+        if (on) { mask_trig_ = mask_stick_ = mask_btn_ = true; }
+        else {
+            if (mask_trig_ && trig < mapper_.s.trigger_release) mask_trig_ = false;
+            if (mask_stick_ && std::fabs(sx) < turn_deadzone_ && std::fabs(sy) < turn_deadzone_) mask_stick_ = false;
+            if (mask_btn_ && !(p.buttons & btn)) mask_btn_ = false;
+        }
+        if (mask_trig_) trig = 0;
+        if (mask_stick_) { sx = 0; sy = 0; }
+        if (mask_btn_) p.buttons &= ~btn;
     }
 
     // Smooth turn (default; user 2026-11-27: "I hate snap turning"): right stick X outside the grip layer turns
@@ -157,6 +186,7 @@ private:
     double pad_t_{0}, settings_check_t_{0}, uevr_check_t_{0}, cfg_sent_t_{0};
     std::string settings_text_;   // forwarded to the Lua scripts (no file access in UEVR 1.05 Lua)
     bool layer_on_{false}, turning_{false};
+    bool pointer_on_{false}, mask_trig_{false}, mask_stick_{false}, mask_btn_{false};
     double turn_t_{0};
     float turn_speed_{120}, turn_deadzone_{0.2f}, yaw_scale_{2.5f};
     int turn_method_{0};
