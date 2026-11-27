@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hand] " .. tostring(s)) end) end
 
-local cfg = { hand_aim = 1, hand_arms = 0, hand_log_s = 2, hand_pre_apply = 1, hand_max_cm = 150, hand_arm_hook = 1 }
+local cfg = { hand_aim = 1, hand_arms = 0, hand_log_s = 2, hand_pre_apply = 0, hand_tick_apply = 0, hand_max_cm = 150, hand_arm_hook = 1 }
 local active = false
 
 local function parse_cfg(text)
@@ -154,7 +154,9 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
             return
         end
         if state.untracked then state.untracked = false; log("hand tracked again: ray from the hand") end
-        pcm:K2_SetActorLocationAndRotation(loc, r, false, hit, false)
+        -- Per-frame move off by default (run 02:45: turning the camera manager with the hand swung the HUD);
+        -- the arm() pre-hook moves it only for the game's own ray, and the camera update puts it back before rendering.
+        if cfg.hand_tick_apply ~= 0 then pcm:K2_SetActorLocationAndRotation(loc, r, false, hit, false) end
         state.sets = state.sets + 1
         state.t = state.t + delta
         if state.t - state.last_log >= cfg.hand_log_s then

@@ -15,7 +15,7 @@ session (or the other agent) picks up the work.
 - Publisher guidance and chosen scope: [dated sources in RESEARCH.md; user decision and unknowns]
 - Launch for testing: `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
-- Who owns the game install right now: nobody (controls thread closed its live session 02:41 at the user's request; next: controls live session when the user says go)
+- Who owns the game install right now: **controls thread, live session with the user** (from 2026-11-27 02:52, -Controls, 02:01 settings restored)
 
 ## Rendering compatibility
 
@@ -76,6 +76,21 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 | 2026-11-27 00:39:22, 00:47:26, 00:57:09, 01:02:32, 01:07:06, 01:10:38 | same: 0xc0000409 (fail-fast) at 0x7ff82415c28f, module unknown (Application log event 1000) | runs 00:28, 00:43, 00:55, 01:01, 01:05, 01:09 | 5e690d8f, UEVR 1.05, **OpenXR (VDXR) only** | quitting the game, every time | Exit-time crash on UEVR OpenXR shutdown (not Lua: first two runs had no scripts). Gameplay unaffected; saves made before quitting are fine as far as known. Owner: runtime thread. |
 
 ## Log
+
+### 2026-11-27 Claude (menu thread): preLoad removed from the 2D list (Proceed click quit the game); geometry probe
+
+- Controls thread: with our 2D screen on the preLoad warning screen, a click at Proceed's flat-mode desktop position (1549,1066 of 2560x1440, DPI-aware SendInput) quit the game at 02:45:37 (run `logs\2026-11-27_02-44-36`), and the user's pointer clicks at 02:40 did the same. **Hazard removed:** `votv_menu_camera.lua` turns 2D on in `/Game/menu.menu` only again (repo copy; takes effect at the next launch's sync, the running session was untouched).
+- What the logs show: UEVR runs a 5528x2940 double-wide eye swapchain (`[VR] Width: 5528`, `Height: 2940`) and later reports height 1440 (UI). They don't show the game's viewport size or widget positions, so whether 2D mode re-lays out the UMG (other viewport size/aspect) or remaps window pixels to the viewport is not proven yet. Note: the main menu was used successfully with the physical mouse while looking at the monitor, so in 2D mode the monitor picture and mouse input agree; it's the flat-mode coordinates that are wrong in 2D mode.
+- **Probe added (log only)**: on the menu and preLoad worlds, once the widgets are laid out: viewport size and DPI scale (`WidgetLayoutLibrary`), mouse in viewport and platform coordinates, and every visible direct Button of `ui_menu_C` / `ui_disclaimer_C` with its absolute (desktop) top-left and size (`SlateBlueprintLibrary.LocalToAbsolute` / `GetAbsoluteSize` on the cached geometry). That gives Proceed/Quit and the main-menu buttons in the coordinates the pointer clicks in. The pointer's UV-to-pixel map is then fixed against it; until then the green UMG dot (drawn at the game's own mouse position) shows the true click spot.
+- Rule noted: never auto-click through menus on the user's screen (calibration keeps clicks off; the pointer clicks only on the user's trigger).
+
+### 2026-11-27 Claude (menu thread): green game-drawn cursor dot (UMG) + red D3D dot, both live-switchable
+
+- **Green UMG dot** (in `votv_menu_camera.lua`): while the flat menu is shown, a 14 px Image widget is spawned (`GameplayStatics.SpawnObject`) into the visible menu widget's root CanvasPanel (`ui_menu_C` in the main menu, `ui_disclaimer_C` on the warning screen), HitTestInvisible, z-order 10000, and moved every frame to `WidgetLayoutLibrary.GetMousePositionOnViewport`. It is part of the game's UI, so it is on UEVR's 2D screen by construction, and it sits where the game thinks the mouse is, so it shows exactly where a click lands. Removed when leaving the flat menu. Stub-tested (attach, follow the mouse position, switch off, remove); real UMG calls untested.
+- **Red dot** (`votv_pointer.dll`): drawn into UEVR's UI and scene render targets after Slate (target #3); backbuffer still on (PC monitor), framework off.
+- **Live switches, no relaunch**: `scripts\votv_pointer.txt` in the profile is re-read every second: `ptr_dot_umg` (forwarded to the Lua script as a "votv_ptr" Lua event each second), `ptr_dot_ui`, `ptr_dot_scene`, `ptr_dot_desktop`, `ptr_click`, `ptr_calibrate`, and the screen geometry. pointer_test 15/15.
+- Aim: not correct by construction (UEVR's 2D-screen geometry isn't exposed and the 02:39 clicks are two moving samples, too few to fit). But the green dot shows the true click spot, and `Calibrate-Pointer.bat` fits the geometry from 4 corners in under a minute.
+- Pinning the 2D screen against head yaw: not cheap in UEVR 1.05 (no setting; the screen is placed by UEVR). Not prepared; next after the pointer works.
 
 ### 2026-11-27 Claude (menu thread): dot target #3: UEVR's UI and scene render targets (offline build)
 
