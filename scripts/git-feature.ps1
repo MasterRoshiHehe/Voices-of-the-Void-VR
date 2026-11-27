@@ -90,6 +90,44 @@ function Save-Rev([string]$spec, [string]$dest) {
     cmd /c "git cat-file --filters `"$spec`" > `"$dest`""
     if ($LASTEXITCODE -ne 0) { throw "could not read $spec" }
 }
+function Read-TextLf([string]$file) {
+    return ([IO.File]::ReadAllText($file, (New-Object Text.UTF8Encoding($false)))).Replace("`r`n", "`n")
+}
+function Write-TextFile([string]$file, [string]$text) {
+    [IO.File]::WriteAllText($file, $text, (New-Object Text.UTF8Encoding($false)))
+}
+function Get-RevTextLf([string]$spec, [string]$tmpFile) {
+    # raw blob (stored with LF), so every side of a merge has the same line endings
+    cmd /c "git cat-file blob `"$spec`" > `"$tmpFile`""
+    if ($LASTEXITCODE -ne 0) { throw "could not read $spec" }
+    return Read-TextLf $tmpFile
+}
+function Test-UnionResult([string]$result, [string]$ours, [string]$theirs) {
+    # A union merge must never repeat content: no long line may appear more often than in either
+    # side, and STATUS.md's single-line fields (the install lock) must stay single.
+    $problems = @()
+    $count = { param($t) $h = @{}; foreach ($l in $t.Split("`n")) { if ($l.Length -gt 40) { $h[$l] = 1 + [int]$h[$l] } }; $h }
+    $r = & $count $result; $o = & $count $ours; $t = & $count $theirs
+    foreach ($k in $r.Keys) { if ($r[$k] -gt [Math]::Max([int]$o[$k], [int]$t[$k])) { $problems += "repeated: $($k.Substring(0, [Math]::Min(70, $k.Length)))" } }
+    $locks = @($result.Split("`n") | Where-Object { $_ -like '- Who owns the game install*' })
+    if ($locks.Count -gt 1) { $problems += "install lock line appears $($locks.Count) times (both sides changed it)" }
+    return $problems
+}
+function Assert-UnionTree([string]$tree, [string]$ours, [string]$theirs) {
+    # check union-merged files in a merge-tree result before it becomes a commit
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("git-feature-u-" + [guid]::NewGuid().ToString('N'))
+    try {
+        foreach ($path in @(& git diff --no-renames --name-only $ours $tree)) {
+            if (-not ((& git check-attr merge -- $path) -match 'merge: union')) { continue }
+            if (-not (Get-Blob "${ours}:$path") -or -not (Get-Blob "${theirs}:$path") -or -not (Get-Blob "${tree}:$path")) { continue }
+            $bad = @(Test-UnionResult (Get-RevTextLf "${tree}:$path" $tmp) (Get-RevTextLf "${ours}:$path" $tmp) (Get-RevTextLf "${theirs}:$path" $tmp))
+            if ($bad.Count) {
+                Write-Output "UNION MERGE OF $path WOULD DUPLICATE CONTENT:"; $bad | Select-Object -First 8 | ForEach-Object { Write-Output "  $_" }
+                throw "merge stopped, nothing changed: both sides edited the same lines of $path; bring one side's edit into the other branch by hand, then retry"
+            }
+        }
+    } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+}
 function Sync-Dev {
     $env:GCM_INTERACTIVE = 'never'
     $remoteRef = "refs/remotes/origin/$Base"
@@ -113,7 +151,9 @@ function Sync-Dev {
             Write-Output "CONFLICT bringing origin/$Base into ${Base}:"; $mt | Select-Object -Skip 1 | Write-Output
             throw "sync stopped, nothing changed: resolve on a feature branch (or ask the repo thread)"
         }
-        $new = New-Commit (($mt | Select-Object -First 1).Trim()) @($local, $remote) "Merge origin/$Base into $Base"
+        $syncTree = ($mt | Select-Object -First 1).Trim()
+        Assert-UnionTree $syncTree $local $remote
+        $new = New-Commit $syncTree @($local, $remote) "Merge origin/$Base into $Base"
         Write-Output "merged origin/$Base into $Base as $new"
     }
     Invoke-Git update-ref -m "git-feature sync" "refs/heads/$Base" $new $local | Out-Null
@@ -144,12 +184,26 @@ function Update-Disk([string]$local, [string]$new) {
                 # already identical
             } elseif ($diskBlob -and $oldBlob -and $newBlob) {
                 # a thread edited it: three-way merge its edits with the incoming change
-                $b = Join-Path $tmp 'base'; $t = Join-Path $tmp 'theirs'; $o = Join-Path $tmp 'out'
-                Save-Rev "${local}:$path" $b; Save-Rev "${new}:$path" $t
-                $union = if ((& git check-attr merge -- $path) -match 'merge: union') { '--union' } else { '' }
-                cmd /c "git merge-file -p $union `"$full`" `"$b`" `"$t`" > `"$o`""
-                if ($LASTEXITCODE -eq 0) { Copy-Item -LiteralPath $o -Destination $full -Force; Write-Output "  merged into on-disk edits: $path" }
-                else { $kept += $path; Write-Output "  LEFT AS IS (conflicts with on-disk edits): $path" }
+                # All three sides go in with LF endings: mixed CRLF/LF makes every line differ, and a
+                # union merge then keeps the whole file twice (STATUS.md, 2026-11-27).
+                $x = Join-Path $tmp 'x'; $m = Join-Path $tmp 'mine'; $b = Join-Path $tmp 'base'; $t = Join-Path $tmp 'theirs'; $o = Join-Path $tmp 'out'
+                $diskRaw = [IO.File]::ReadAllText($full, (New-Object Text.UTF8Encoding($false)))
+                $mine = $diskRaw.Replace("`r`n", "`n"); $baseT = Get-RevTextLf "${local}:$path" $x; $theirsT = Get-RevTextLf "${new}:$path" $x
+                Write-TextFile $m $mine; Write-TextFile $b $baseT; Write-TextFile $t $theirsT
+                $isUnion = ((& git check-attr merge -- $path) -match 'merge: union')
+                $union = if ($isUnion) { '--union' } else { '' }
+                cmd /c "git merge-file -p $union `"$m`" `"$b`" `"$t`" > `"$o`""
+                $ok = ($LASTEXITCODE -eq 0)
+                $merged = if ($ok) { Read-TextLf $o } else { '' }
+                $bad = if ($ok -and $isUnion) { @(Test-UnionResult $merged $mine $theirsT) } else { @() }
+                $now = [IO.File]::ReadAllText($full, (New-Object Text.UTF8Encoding($false)))
+                if (-not $ok) { $kept += $path; Write-Output "  LEFT AS IS (conflicts with on-disk edits): $path" }
+                elseif ($bad.Count) { $kept += $path; Write-Output "  LEFT AS IS (union would duplicate content: $($bad[0])): $path" }
+                elseif ($now -ne $diskRaw) { $kept += $path; Write-Output "  LEFT AS IS (a thread edited it during the merge): $path" }
+                else {
+                    if ($diskRaw.Contains("`r`n")) { $merged = $merged.Replace("`n", "`r`n") }
+                    Write-TextFile $full $merged; Write-Output "  merged into on-disk edits: $path"
+                }
             } else { $kept += $path; Write-Output "  LEFT AS IS (added/deleted on both sides): $path" }
         }
     } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
@@ -240,6 +294,7 @@ switch ($Action) {
             throw "merge stopped: commit a resolution on $Branch (bring in $Base's version of those files, fix, commit), then merge again"
         }
         $tree = ($mt | Select-Object -First 1).Trim()
+        Assert-UnionTree $tree $baseSha $feat
         if (-not $Message) { $Message = "Merge $Branch into $Base" }
         $commit = New-Commit $tree @($baseSha, $feat) $Message
         Invoke-Git update-ref -m "git-feature merge $Branch" "refs/heads/$Base" $commit $baseSha | Out-Null
