@@ -15,7 +15,7 @@ session (or the other agent) picks up the work.
 - Publisher guidance and chosen scope: [dated sources in RESEARCH.md; user decision and unknowns]
 - Launch for testing: `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
-- Who owns the game install right now: nobody (graphics session released it 2026-11-27 01:52 after run `logs\2026-11-27_01-45-25`)
+- Who owns the game install right now: nobody (menu session released it 2026-11-27 02:01; it made offline changes only)
 
 ## Rendering compatibility
 
@@ -75,6 +75,34 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 | 2026-11-27 00:39:22, 00:47:26, 00:57:09, 01:02:32, 01:07:06, 01:10:38 | same: 0xc0000409 (fail-fast) at 0x7ff82415c28f, module unknown (Application log event 1000) | runs 00:28, 00:43, 00:55, 01:01, 01:05, 01:09 | 5e690d8f, UEVR 1.05, **OpenXR (VDXR) only** | quitting the game, every time | Exit-time crash on UEVR OpenXR shutdown (not Lua: first two runs had no scripts). Gameplay unaffected; saves made before quitting are fine as far as known. Owner: runtime thread. |
 
 ## Log
+
+### 2026-11-27 Claude (menu thread): main menu back to a flat 2D screen (ready to test)
+
+- User 00:55: "menu is exactly as messed up as it has been so far. just make it back to a 2d menu". That was the graphics run `logs6-11-27_01-45-25`: the BackgroundBlur hide was **not active** there (staged off; no `menu: hid` lines in its log), so the blur hypothesis is untested. Parked with the view lock, both default off.
+- Same run: settings still not loaded (`script dir nil via none`): neither UEVR's persistent-dir function nor `debug.getinfo` is reachable from UEVR 1.05 Lua, so `scriptsotv\settings.lua` can't be found and the scripts run on their defaults. Defaults are therefore what ships: menu_2d on, lock off, nothing hidden. Settings file kept for when a path is found (or a later UEVR).
+- Cursor data, same run: in the menu `bShowMouseCursor=false`, `DefaultMouseCursor=1`, `CurrentMouseCursor=1`, so the game isn't asking for the OS cursor there; the menu's pointer must come from somewhere else (to find next).
+- **Change:** `votv_menu_camera.lua` sets UEVR's `VR_2DScreenMode=true` while the world is `/Game/menu.menu` and `false` everywhere else, applied only when the wanted value changes (also on the first tick, so a saved 2D config from a run that quit in the menu is undone in preLoad). Pause menu is in the gameplay world, so it stays 3D. Same mechanism that worked live at 01:05 (`set_mod_value` applied 2D immediately). Stub run, with and without the settings module: preLoad 2D off, menu on, gameplay off, back to menu on.
+
+### 2026-11-27 Claude (graphics thread): suspended by user
+
+- **Suspended at the user's request** (the game runs at 70+ fps in the headset and looks great). Nothing of this thread changes rendering now.
+- Baseline: steady 72 Hz on OpenXR (VD, Quest 3), run `logs\2026-11-27_01-45-25`, probe only. The only FAIL was the known OpenXR quit crash.
+- Effects the game has on (cvars, the same in the menu and in gameplay, never changed by the game during the run):
+  - MotionBlurQuality=3 at MotionBlur.Amount=0.1
+  - DepthOfFieldQuality=2
+  - SceneColorFringeQuality=1 (chromatic aberration)
+  - Tonemapper.GrainQuantization=1
+  - LensFlareQuality=2
+  - TAA (r.DefaultFeature.AntiAliasing=2, Tonemapper.Sharpen=1)
+- The game's own camera options, for comfort later: headbob strength and tilt, viewmodel bob, align view to floor.
+- Branch `feature/vr-graphics-comfort` (not merged into dev), last code commit `55ab0f5`: votv_graphics.lua with the cvar logger, the frame timer, map/loc scene tags, missed-frame counts, and opt-in overrides with live revert. Only mock-tested; the new version hasn't run in game.
+- Removed from the shared working tree: `profile\VotV-Win64-Shipping\scripts\votv_graphics.lua` (safe on the branch) and the gfx block in `scripts\votv\settings.lua` (menu keys untouched).
+- **Not removed yet:** the live UEVR profile copy, `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\scripts\votv_graphics.lua` and the gfx lines in that folder's `votv\settings.lua`. The menu session held the lock at 01:57. That copy is read-only (probe only), but it still runs and logs in every UEVR launch until someone deletes it while the lock reads nobody, because run-vr.ps1 never deletes profile scripts.
+- Open items:
+  - SteamVR baseline.
+  - The settings require path: UEVR's working directory is the scripts folder only while scripts load. debug.getinfo and get_persistent_dir gave nothing. A launcher-written `votv\paths.lua` is supported but not generated yet.
+  - Check the missed-frame counter and the scene tags in game.
+  - The nvidia-smi GPU sampler for headroom, not started.
 
 ### 2026-11-27 Claude (graphics thread): probe-only baseline run, OpenXR
 
