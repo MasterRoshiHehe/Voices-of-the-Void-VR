@@ -126,6 +126,48 @@ menu shortcut).
    WASD walks. Both runtimes.
 3. Buttons build: the table above.
 
+## 5. 6DoF hands: research and proposed ladder (2026-11-27)
+
+User asked (2026-11-27 00:11) for research on keybinding and 6DoF controls. Sources: the game's
+own grab code (`docs/GAME-INTERNALS.md` §3-4, pak read, not yet live), UEVR docs
+([adding 6DoF](https://docs.uevr.io/usage/adding_6dof.html),
+[UObjectHook Lua](https://docs.uevr.io/plugins/lua/types/UObjectHook.html),
+[MotionControllerState](https://docs.uevr.io/plugins/lua/types/MotionControllerState.html)), and
+other UEVR games (Subnautica 2's jbusfield 6DoF profile, [Road to VR 2026-06-19](https://roadtovr.com/subnautica-2-vr-mod-vr-controller-support/); method not confirmed). No existing
+VOTV motion-controls profile was found.
+
+**What the game gives us.** Grabbing is not an attach: E picks a target with the `arm()` ray, then a
+`PhysicsHandleComponent` (`grabHandle`) pulls the object every tick to `arm(grabLen).end` with
+rotation `grabTargetRotation` (`grabLen` 50-150 cm, wheel ±10). Heavy objects use constraints toward
+the same point. Tools in hand are actors attached to the `weapon` mesh. So nearly all of "real hand
+interaction" reduces to two inputs the game already reads: **where `arm()` says the ray/hand is**,
+and **the carry rotation**. That is far cheaper than writing our own physics grab, and keeps the
+game's own mass, collisions and drop/throw logic.
+
+**UEVR tools.** UObjectHook can attach any component of the pawn to a controller (hand 0/1, offsets
+saved with "Save State"; Lua: `UObjectHook.get_or_add_motion_controller_state(obj)` then
+`set_hand`, `set_location_offset`, `set_rotation_offset`, `set_permanant`). "Permanent" stops UEVR
+resetting the transform after rendering (needed when game logic reads it); risky on anything that
+moves the player. Persistence across respawn/new objects isn't documented: test.
+
+Proposed ladder, one rung per build, each with its own check; the user picks how far to go:
+
+| Rung | What the player feels | How | Observable check |
+|---|---|---|---|
+| 1. Point with the hand | look-at, pick-up target and carried object follow where the right hand points (from the head) | `VR_AimMethod=2` only | `lookAtActor` changes when only the hand moves; held object follows the hand direction |
+| 2. Ray from the hand | same, but the ray starts at the hand (no head parallax) | override `arm()` out params with the hand pose (UE4SS post-hook) and set `VR_AimMethod=0` | `arm.start` equals the hand position in a trace log |
+| 3. Object in the hand | carried prop sits at the hand and turns with the wrist (no RMB needed) | in `arm()` for the carry call, `end` = hand + short offset; `grabTargetRotation` = hand rotation × the rotation at pick-up | prop centre within a few cm of the hand; wrist twist turns it; walls still block it (physics handle) |
+| 4. Tools in the hand | flashlight, held tools and the arms mesh follow the hand | UObjectHook attach of `weapon` (and `light_R`), hide `arms`/`arms_off` | eye snapshot shows the item at the controller |
+| 5. Physical throw | let go while swinging to throw | on release, set the dropped prop's velocity from the hand's last ~100 ms (Lua) | prop speed ≈ hand speed |
+| 6. Near grab, off hand | grab what the hand touches; left hand holds the offhand item | sphere overlap at the hand instead of a ray; left-hand `arm()`/`weapon_off` | grab without pointing works; no grab through walls |
+
+Not planned unless asked: arm IK/finger tracking (hide the arms instead), physical levers and
+buttons (the game's buttons are E-use; pointing + grip already works), haptics (off by default).
+
+Button mapping stays as §2 at every rung; only `rotate` (RMB) and the mouse wheel become optional
+once rung 3 works. Rungs 2-6 need UE4SS next to UEVR in the same process (not yet run together) and
+a live check that a UE4SS post-hook can rewrite `arm()`'s out params; fallback is a C++ UEVR plugin.
+
 ## Prompts
 
 The game's prompts name keyboard keys ("E", "LMB"). With this layout the prompts stay true per
