@@ -232,8 +232,58 @@ local function pose_built(side)
     end)
 end
 
+
+-- Hands, v5 "mannequin" style (user 16:40: "try this first"): Epic's UE4 mannequin ships inside the game's pak
+-- (DynamicGravityCharacter plugin content) with fully rigged fingers, but the game never loads it. Try to get it:
+-- (1) already in memory, (2) KismetSystemLibrary soft-path load, then pose a copy as in v3 (one hand subtree kept).
+-- Every attempt is logged; if none works the built hands are used instead.
+local MANNEQUIN = "/DynamicGravityCharacter/Mannequin/Character/Mesh/SK_Mannequin.SK_Mannequin"
+local mannequin, mannequin_tried = nil, false
+local function load_mannequin()
+    if mannequin_tried then return mannequin end
+    mannequin_tried = true
+    mannequin = find("SkeletalMesh " .. MANNEQUIN)
+    log("mannequin: in memory: " .. tostring(mannequin ~= nil))
+    if mannequin ~= nil then return mannequin end
+    local kslib = nil
+    local c = find("Class /Script/Engine.KismetSystemLibrary")
+    if c ~= nil then pcall(function() kslib = c:get_class_default_object() end) end
+    if kslib == nil then log("mannequin: KismetSystemLibrary not found"); return nil end
+    local ok, err = pcall(function()
+        local sp = kslib:MakeSoftObjectPath(MANNEQUIN)
+        log("mannequin: MakeSoftObjectPath ok")
+        local ref = kslib:Conv_SoftObjPathToSoftObjRef(sp)
+        log("mannequin: soft reference ok")
+        local o = nil
+        if not pcall(function() o = kslib:LoadAsset_Blocking(ref) end) then log("mannequin: LoadAsset_Blocking not available") end
+        if o == nil then o = kslib:Conv_SoftObjectReferenceToObject(ref) end
+        mannequin = o
+    end)
+    log("mannequin: soft-path load " .. (ok and (mannequin ~= nil and "succeeded" or "returned nothing") or ("failed: " .. tostring(err))))
+    if mannequin == nil then mannequin = find("SkeletalMesh " .. MANNEQUIN) end
+    return mannequin
+end
+
+local function make_mannequin_hand(pawn, side, mesh)
+    local comp = add_comp(pawn, "Class /Script/Engine.PoseableMeshComponent")
+    if comp == nil then return false end
+    comp:SetSkeletalMesh(mesh, true)
+    pcall(function() comp:SetCollisionEnabled(0) end)
+    pcall(function() comp:SetCastShadow(false) end)
+    pcall(function() comp:SetBoundsScale(cfg.hands_bounds) end)
+    st.hands[side] = comp
+    st.hand_states[side] = mc_state(comp, side)
+    st.calibrated[side] = true
+    local hb, nb = find_hand_bone(comp, side)
+    st.hand_bone[side] = hb
+    log(string.format("hands: %s mannequin hand (%d bones), hand bone %s", side == 1 and "right" or "left", nb or -1, tostring(hb)))
+    if hb == nil then comp:SetVisibility(false, false); return false end
+    pose_hand(side)
+    return true
+end
+
 local function calibrate_hand(side) end   -- v1 leftover, nothing to measure in v2
-local function apply_hand_offsets() for side = 0, 1 do if cfg.hands_style == 1 then pose_built(side) else pose_hand(side) end end end
+local function apply_hand_offsets() for side = 0, 1 do if st.hand_bone and st.hand_bone[side] then pose_hand(side) else pose_built(side) end end end
 
 -- Run 16:55 (user): "my player body is stuck to my left hand" with only the flashlight attached, so moving the
 -- game's own light_R drags other parts of the player with it. The game's light stays where it is (dark: its
@@ -320,7 +370,9 @@ local function setup(pawn)
     st.game_light, st.light_on, st.light_int = nil, nil, 0
     if not libs() then log("setup: Kismet libraries not found"); return end
     if cfg.hands_show ~= 0 then
-        if cfg.hands_style == 1 then make_built_hand(pawn, 1); make_built_hand(pawn, 0); apply_hand_offsets()
+        local mm = cfg.hands_style == 2 and load_mannequin() or nil
+        if mm ~= nil then make_mannequin_hand(pawn, 1, mm); make_mannequin_hand(pawn, 0, mm)
+        elseif cfg.hands_style >= 1 then make_built_hand(pawn, 1); make_built_hand(pawn, 0); apply_hand_offsets()
         else make_hand(pawn, 1); make_hand(pawn, 0) end
     end
     if cfg.flash_on ~= 0 then make_flashlight(pawn) end
