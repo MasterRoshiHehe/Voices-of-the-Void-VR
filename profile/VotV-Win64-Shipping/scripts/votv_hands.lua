@@ -17,8 +17,8 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0,
-              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 5000 }
+local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 1,
+              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 5000, flash_lens_slot = -1 }
 local active = false
 
 local function parse_cfg(text)
@@ -75,60 +75,95 @@ local function add_comp(pawn, class_path)
     return pawn:AddComponentByClass(cls, true, identity(), false)
 end
 
--- Hands, v2 (user 16:01: hands wanted; v1 copies dragged the torso along). One PoseableMeshComponent per
--- controller with the game's arms mesh, posed once in component space: every bone except this side's hand is
--- shrunk to 1% and parked at the component origin (so the torso, the other arm and this arm collapse inside the
--- hand), and the hand bone is put back at full size at the origin, which UEVR drives to the controller grip.
--- Live: hands_x/y/z (cm) move the hand, hands_pitch/yaw/roll (deg) turn it, hands_show hides it.
-local BONES = { "root", "body", "shoulder_L", "upperarm_L", "forearm_L", "hand_L", "IK_hand_L", "IK_hand_L_end",
-                "armPole_L", "armPole_L_end", "weapon_L", "weapon_L_end", "shoulder_R", "upperarm_R", "forearm_R",
-                "hand_R", "IK_hand_R", "IK_hand_R_end", "armPole_R", "armPole_R_end", "weapon_R", "weapon_R_end" }
+-- Hands, v3 (run 17:25, user: "white boxes ... only rendered in one eye ... nothing that resembles hands").
+-- v2 used the first-person arms mesh, whose viewmodel material and helper bones don't suit a world-space copy.
+-- v3 copies the player's own third-person body (pawn.playermodel, else mesh_playerVisible), with its materials,
+-- and keeps only one hand: the bone tree is read from the mesh, the hand bone is found by name, and every bone
+-- outside that hand's subtree is shrunk to 1% and parked on the hand, so arms and body collapse inside it.
+-- The hand bone sits at the component origin, which UEVR drives to the controller grip.
+-- Live: hands_x/y/z (cm), hands_pitch/yaw/roll (deg), hands_show, hands_source (1 body, 0 first-person arms).
 local COMP = 1   -- EBoneSpaces::ComponentSpace
+
+local function source_mesh(pawn)
+    local names = cfg.hands_source == 0 and { "arms" } or { "playermodel", "mesh_playerVisible", "arms" }
+    for _, n in ipairs(names) do
+        local c, m = nil, nil
+        pcall(function() c = pawn[n]; m = c and c.SkeletalMesh end)
+        if m ~= nil then return c, m, n end
+    end
+end
+
+local function find_hand_bone(comp, side)
+    local best = nil
+    local nb = comp:GetNumBones()
+    for i = 0, nb - 1 do
+        local b = comp:GetBoneName(i):to_string()
+        local l = b:lower()
+        local is_hand = l:find("hand") ~= nil and not l:find("ik") and not l:find("twist") and not l:find("pole")
+        local right = l:find("_r$") or l:find("%.r$") or l:find("right") or l:find("^r_")
+        local left = l:find("_l$") or l:find("%.l$") or l:find("left") or l:find("^l_")
+        if is_hand and ((side == 1 and right) or (side == 0 and left)) then
+            if best == nil or #b < #best then best = b end   -- shortest match: hand_r over hand_r_end
+        end
+    end
+    return best, nb
+end
 
 local function pose_hand(side)
     local comp = st.hands[side]
-    if comp == nil then return end
-    local keep = side == 1 and "hand_R" or "hand_L"
+    local keep = st.hand_bone[side]
+    if comp == nil or keep == nil then return end
+    local nb = comp:GetNumBones()
+    -- the hand subtree: bones whose parent chain reaches the hand bone
+    local keepset = { [keep] = true }
+    local names = {}
+    for i = 0, nb - 1 do names[i] = comp:GetBoneName(i):to_string() end
+    for i = 0, nb - 1 do   -- parents come before children in UE bone order
+        local n = names[i]
+        local p = comp:GetParentBone(fname(n)):to_string()
+        if keepset[p] then keepset[n] = true end
+    end
     local tiny, zero = vec(0.01, 0.01, 0.01), vec(0, 0, 0)
-    for _, b in ipairs(BONES) do   -- parents come first in this list, so children are set after them
-        if b ~= keep then
-            pcall(function()
-                local n = fname(b)
-                comp:SetBoneLocationByName(n, zero, COMP)
-                comp:SetBoneScaleByName(n, tiny, COMP)
-            end)
+    for i = 0, nb - 1 do
+        local n = names[i]
+        if not keepset[n] then
+            pcall(function() local f = fname(n); comp:SetBoneLocationByName(f, zero, COMP); comp:SetBoneScaleByName(f, tiny, COMP) end)
         end
     end
     local ok, err = pcall(function()
-        local n = fname(keep)
+        local f = fname(keep)
         local mx = side == 1 and 1 or -1
-        comp:SetBoneLocationByName(n, vec(cfg.hands_x, mx * cfg.hands_y, cfg.hands_z), COMP)
-        comp:SetBoneRotationByName(n, rot(cfg.hands_pitch, mx * cfg.hands_yaw, mx * cfg.hands_roll), COMP)
-        comp:SetBoneScaleByName(n, vec(1, 1, 1), COMP)
+        comp:SetBoneLocationByName(f, vec(cfg.hands_x, mx * cfg.hands_y, cfg.hands_z), COMP)
+        comp:SetBoneRotationByName(f, rot(cfg.hands_pitch, mx * cfg.hands_yaw, mx * cfg.hands_roll), COMP)
+        comp:SetBoneScaleByName(f, vec(1, 1, 1), COMP)
     end)
     if not ok then log("hands: posing failed: " .. tostring(err)) end
 end
 
 local function make_hand(pawn, side)
-    local mesh = nil
-    pcall(function() mesh = pawn.arms.SkeletalMesh end)
-    if mesh == nil then log("hands: pawn.arms has no SkeletalMesh"); return end
+    local src, mesh, src_name = source_mesh(pawn)
+    if mesh == nil then log("hands: no player mesh found"); return end
     local comp = add_comp(pawn, "Class /Script/Engine.PoseableMeshComponent")
     if comp == nil then log("hands: AddComponentByClass(PoseableMeshComponent) failed"); return end
     comp:SetSkeletalMesh(mesh, true)
-    -- Run 17:19 (user): the hands showed as white objects. Use the game arms' own (possibly dynamic) materials.
-    pcall(function()
-        local n = pawn.arms:GetNumMaterials()
-        for i = 0, n - 1 do comp:SetMaterial(i, pawn.arms:GetMaterial(i)) end
-        log("hands: copied " .. n .. " material(s) from the game's arms")
-    end)
+    pcall(function() local n = src:GetNumMaterials(); for i = 0, n - 1 do comp:SetMaterial(i, src:GetMaterial(i)) end end)
     pcall(function() comp:SetCollisionEnabled(0) end)
     pcall(function() comp:SetCastShadow(false) end)
+    pcall(function() comp:SetBoundsScale(4) end)   -- the shrunk pose is far from the ref pose; avoid per-eye culling
     st.hands[side] = comp
     st.hand_states[side] = mc_state(comp, side)
     st.calibrated[side] = true
+    local hb, nb = find_hand_bone(comp, side)
+    st.hand_bone[side] = hb
+    log(string.format("hands: %s hand from %s (%d bones), hand bone %s", side == 1 and "right" or "left", src_name, nb or -1, tostring(hb)))
+    if hb == nil then
+        local list = {}
+        for i = 0, math.min((nb or 0), 80) - 1 do list[#list + 1] = comp:GetBoneName(i):to_string() end
+        log("hands: no hand bone found; bones: " .. table.concat(list, " "))
+        comp:SetVisibility(false, false)
+        return
+    end
     pose_hand(side)
-    log("hands: " .. (side == 1 and "right" or "left") .. " hand (posed copy of the game's arms) on the controller")
 end
 
 local function calibrate_hand(side) end   -- v1 leftover, nothing to measure in v2
@@ -187,6 +222,12 @@ local function make_torch_model(pawn)
     local comp = add_comp(pawn, "Class /Script/Engine.StaticMeshComponent")
     if comp == nil then log("flashlight: AddComponentByClass(StaticMeshComponent) failed"); return true end
     comp:SetStaticMesh(mesh)
+    pcall(function()
+        local n, list = comp:GetNumMaterials(), {}
+        for i = 0, n - 1 do local m = comp:GetMaterial(i); list[#list + 1] = i .. "=" .. (m and m:get_fname():to_string() or "nil") end
+        log("flashlight model materials: " .. table.concat(list, " "))
+    end)
+    if cfg.flash_lens_slot >= 0 then pcall(function() comp:SetMaterial(cfg.flash_lens_slot, comp:GetMaterial(0)) end) end
     pcall(function() comp:SetCollisionEnabled(0) end)
     pcall(function() comp:SetCastShadow(false) end)
     comp:SetVisibility(false, false)
@@ -205,7 +246,7 @@ end
 
 local function setup(pawn)
     st.pawn = pawn
-    st.hands, st.hand_states, st.hand_base, st.calibrated = {}, {}, {}, {}
+    st.hands, st.hand_states, st.hand_base, st.calibrated, st.hand_bone = {}, {}, {}, {}, {}
     st.light, st.light_state, st.torch, st.torch_state, st.torch_vis = nil, nil, nil, nil, nil
     st.game_light, st.light_on, st.light_int = nil, nil, 0
     if not libs() then log("setup: Kismet libraries not found"); return end
