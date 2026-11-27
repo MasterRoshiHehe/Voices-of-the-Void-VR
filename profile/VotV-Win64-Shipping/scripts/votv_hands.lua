@@ -18,7 +18,7 @@
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
 local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_style = 1, hands_scale = 1,
-              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 1500, flash_copy_game = 0, flash_lens_slot = -1, flash_model_x = -20 }
+              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 500, hands_force_mat = 1, flash_copy_game = 0, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
 local function parse_cfg(text)
@@ -287,6 +287,19 @@ local function make_mannequin_hand(pawn, side, mesh)
     pcall(function() comp:SetCollisionEnabled(0) end)
     pcall(function() comp:SetCastShadow(false) end)
     pcall(function() comp:SetBoundsScale(cfg.hands_bounds) end)
+    -- Run 17:48: KelSkin hand found (16 finger bones) but nothing visible, while the same posing showed the game
+    -- arms. Log its materials; hands_force_mat=1 (live) swaps in the game arms' material to tell a material
+    -- problem apart from a geometry/placement one.
+    pcall(function()
+        local n, list = comp:GetNumMaterials(), {}
+        for i = 0, n - 1 do local m = comp:GetMaterial(i); list[#list + 1] = i .. "=" .. (m and m:get_fname():to_string() or "nil") end
+        log("hands: mesh materials " .. table.concat(list, " "))
+        if cfg.hands_force_mat ~= 0 then
+            local am = pawn.arms:GetMaterial(0)
+            for i = 0, n - 1 do comp:SetMaterial(i, am) end
+            log("hands: materials replaced with the game arms' material (hands_force_mat=1)")
+        end
+    end)
     st.hands[side] = comp
     st.hand_states[side] = mc_state(comp, side)
     st.calibrated[side] = true
@@ -418,6 +431,27 @@ local function setup(pawn)
     if cfg.flash_on ~= 0 then make_flashlight(pawn) end
 end
 
+
+local diag_t = 0
+local function hand_diag(delta)
+    diag_t = diag_t + delta
+    if diag_t < 3 then return end
+    diag_t = 0
+    for side = 0, 1 do
+        local c, b = st.hands[side], st.hand_bone and st.hand_bone[side]
+        if c ~= nil and b ~= nil then
+            pcall(function()
+                local cl = c:K2_GetComponentLocation()
+                local bl = c:GetBoneLocationByName(fname(b), 0)   -- world space
+                local bo = c.Bounds
+                log(string.format("hands diag %s: visible %s, comp (%.0f %.0f %.0f), bone %s (%.0f %.0f %.0f) %.1f cm from comp, bounds r %.0f",
+                    side == 1 and "R" or "L", tostring(c:IsVisible()), cl.X, cl.Y, cl.Z, b, bl.X, bl.Y, bl.Z,
+                    math.sqrt((bl.X - cl.X) ^ 2 + (bl.Y - cl.Y) ^ 2 + (bl.Z - cl.Z) ^ 2), bo and bo.SphereRadius or -1))
+            end)
+        end
+    end
+end
+
 uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
     if not active then return end
     local ok, err = pcall(function()
@@ -447,6 +481,7 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
             make_torch_model(pawn)
         end
         pcall(sync_light)
+        pcall(hand_diag, delta)
         if st.torch ~= nil and st.game_light ~= nil then
             local on = cfg.flash_model ~= 0 and st.game_light:IsVisible()
             if on ~= st.torch_vis then st.torch_vis = on; st.torch:SetVisibility(on, false); log("flashlight model " .. (on and "shown" or "hidden")) end
