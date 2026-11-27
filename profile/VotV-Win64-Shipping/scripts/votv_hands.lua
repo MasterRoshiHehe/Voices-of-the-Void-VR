@@ -18,7 +18,7 @@
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
 local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_style = 1, hands_scale = 1,
-              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 500, hands_force_mat = 1, flash_copy_game = 0, flash_lens_slot = -1, flash_model_x = -20 }
+              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 500, hands_force_mat = 1, flash_copy_game = 1, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
 local function parse_cfg(text)
@@ -121,7 +121,7 @@ local function find_hand_bone(comp, side)
         if f > best_f or (f == best_f and best and #c < #best) then best, best_f = c, f end
     end
     if best ~= nil then log(string.format("hands: hand bone candidates %s -> %s (%d finger bones under it)", table.concat(cands, ","), best, best_f)) end
-    return best, nb
+    return best, nb, cands
 end
 
 local function pose_hand(side)
@@ -130,7 +130,13 @@ local function pose_hand(side)
     if comp == nil or keep == nil then return end
     local nb = comp:GetNumBones()
     -- the hand subtree: bones whose parent chain reaches the hand bone
-    local keepset = { [keep] = true }
+    -- Run 17:51: hand_R sat exactly on the controller, visible, even with the glove material, yet nothing showed:
+    -- the skin is probably weighted to the deform chain (hand_FK_*) while hand_R carries control bones. Keep every
+    -- hand candidate's subtree (hand_R and hand_FK_R) and put each candidate on the controller.
+    local seeds = { keep }
+    for _, c in ipairs((st.hand_cands and st.hand_cands[side]) or {}) do if c ~= keep then seeds[#seeds + 1] = c end end
+    local keepset = {}
+    for _, sd in ipairs(seeds) do keepset[sd] = true end
     local names = {}
     for i = 0, nb - 1 do names[i] = comp:GetBoneName(i):to_string() end
     for i = 0, nb - 1 do   -- parents come before children in UE bone order
@@ -145,14 +151,16 @@ local function pose_hand(side)
             pcall(function() local f = fname(n); comp:SetBoneLocationByName(f, zero, COMP); comp:SetBoneScaleByName(f, tiny, COMP) end)
         end
     end
-    local ok, err = pcall(function()
-        local f = fname(keep)
-        local mx = side == 1 and 1 or -1
-        comp:SetBoneLocationByName(f, vec(cfg.hands_x, mx * cfg.hands_y, cfg.hands_z), COMP)
-        comp:SetBoneRotationByName(f, rot(cfg.hands_pitch, mx * cfg.hands_yaw, mx * cfg.hands_roll), COMP)
-        comp:SetBoneScaleByName(f, vec(1, 1, 1), COMP)
-    end)
-    if not ok then log("hands: posing failed: " .. tostring(err)) end
+    for _, sd in ipairs(seeds) do
+        local ok, err = pcall(function()
+            local f = fname(sd)
+            local mx = side == 1 and 1 or -1
+            comp:SetBoneLocationByName(f, vec(cfg.hands_x, mx * cfg.hands_y, cfg.hands_z), COMP)
+            comp:SetBoneRotationByName(f, rot(cfg.hands_pitch, mx * cfg.hands_yaw, mx * cfg.hands_roll), COMP)
+            comp:SetBoneScaleByName(f, vec(1, 1, 1), COMP)
+        end)
+        if not ok then log("hands: posing " .. sd .. " failed: " .. tostring(err)) end
+    end
 end
 
 local function make_hand(pawn, side)
@@ -303,8 +311,10 @@ local function make_mannequin_hand(pawn, side, mesh)
     st.hands[side] = comp
     st.hand_states[side] = mc_state(comp, side)
     st.calibrated[side] = true
-    local hb, nb = find_hand_bone(comp, side)
+    local hb, nb, cands = find_hand_bone(comp, side)
     st.hand_bone[side] = hb
+    st.hand_cands = st.hand_cands or {}
+    st.hand_cands[side] = cands
     log(string.format("hands: %s mannequin hand (%d bones), hand bone %s", side == 1 and "right" or "left", nb or -1, tostring(hb)))
     if hb == nil then comp:SetVisibility(false, false); return false end
     pose_hand(side)
@@ -321,7 +331,18 @@ local function make_flashlight(pawn)
     local light = nil
     pcall(function() light = pawn.light_R end)
     if light == nil then log("flashlight: pawn.light_R not found"); return end
-    local mine = add_comp(pawn, "Class /Script/Engine.SpotLightComponent")
+    -- Run 17:51 (user): good from a distance, keypad washes out close up. The game's light probably isn't
+    -- inverse-squared (intensity 0.2 only works that way), and that flag only applies before the light registers,
+    -- so the light is added deferred, its falloff copied, then finished.
+    local mine = nil
+    pcall(function()
+        mine = pawn:AddComponentByClass(find("Class /Script/Engine.SpotLightComponent"), true, identity(), true)
+        mine.bUseInverseSquaredFalloff = light.bUseInverseSquaredFalloff
+        mine.LightFalloffExponent = light.LightFalloffExponent
+        pawn:FinishAddComponent(mine, true, identity())
+        log(string.format("flashlight: falloff copied: inverse-squared %s exponent %s", tostring(mine.bUseInverseSquaredFalloff), tostring(mine.LightFalloffExponent)))
+    end)
+    if mine == nil then mine = add_comp(pawn, "Class /Script/Engine.SpotLightComponent") end
     if mine == nil then log("flashlight: AddComponentByClass(SpotLightComponent) failed"); return end
     -- Run 16:59: our light gave no light. Runtime-added lights must be Movable, and the game's light may use
     -- light units and an IES profile (Narrow10000 is referenced by the player), so copy those too.
@@ -373,7 +394,10 @@ local function sync_light()
     local gi = g.Intensity
     if gi ~= nil and gi > 0 then st.game_int = gi; g:SetIntensity(0) end
     if on ~= st.light_on then st.light_on = on; m:SetVisibility(on, false); log("flashlight light " .. (on and "on" or "off")) end
-    local want = cfg.flash_copy_game ~= 0 and st.game_int or cfg.flash_intensity
+    -- copy the game's intensity only when our light got the game's falloff mode too; otherwise it would be dark
+    local same_falloff = false
+    pcall(function() same_falloff = m.bUseInverseSquaredFalloff == g.bUseInverseSquaredFalloff end)
+    local want = (cfg.flash_copy_game ~= 0 and same_falloff and st.game_int) or cfg.flash_intensity
     if want ~= nil and m.Intensity ~= want then m:SetIntensity(want) end
 end
 
