@@ -534,3 +534,12 @@ Lessons from the Sims 4 VR project folded into RESEARCH.md §8 and AGENTS.md rul
 ### 2026-11-26 Claude: kit set up, research pass
 
 Kit Joe975/vr-modding-with-agents @ 07424c2 copied in (skills to .agents/ and .claude/). Venv not created: the setup ran from a Linux shell, so the Windows venv is left for the human (above). No git repo in the folder yet. RESEARCH.md written; game exe SHA-256 5e690d8f…f6cc (2026-11-11), UE 4.27.2. Next: human answers, then the first flat-screen experiment (RESEARCH.md §6).
+
+### 2026-11-27 20:10 hands (controls thread)
+- Kerfur rig: thumb (finger_1) + 3 fingers; no anim BP touches finger bones, finger motion only in AnimSequences (kerfurOmegaV1_a_givePaper, a2_pat, a_idle, a_serverFix...). Marks 19:05 show fingers bending backwards. Plan: read real joint angles from those sequences with CUE4Parse (waiting on user's OK to download). UEVR nightly question still open (RESEARCH.md 9).
+
+### 2026-11-27 20:45 hands: finger bend from the game's own animations (controls thread)
+- tools/animread (source in src/animread, CUE4Parse 1.2.2.202611 from NuGet, user OK 20:03) reads kerfurOmegaV1 anims. Game fist (a_idle): fingers 84.5/85.7/85.7 deg about bone-local +X, thumb 83 deg about (0.50,-0.73,-0.47) then 37.6/63.5 about +X. Most open frame: a_givePaper frame 12 (right; left not animated -> mirrored x,-y,-z,w, mirror checked against the fist).
+- run-vr.ps1 writes votv_game_hand_poses.txt into the UEVR profile (game-derived, not in repo); plugin forwards it as votv_game_poses; votv_hands.lua slerps open->fist per joint by the preset curl. Old axis/angle bend stays as fallback when the file is missing.
+- Bug fixed: finger rest pose was re-captured from the curled pose after hand offset changes (curls stacked); now captured after ResetBoneTransformByName.
+- Checks: Lua syntax ok (lupa), quat->rotator matches UE convention, plugin tests PASS. Not yet seen in headset.
