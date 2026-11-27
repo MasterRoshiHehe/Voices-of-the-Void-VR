@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_style = 1, hands_scale = 1,
+local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_style = 1, hands_scale = 1,
               flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 500, hands_force_mat = 0, flash_copy_game = 1, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
@@ -157,6 +157,18 @@ local function pose_hand(side)
             log(string.format("hands: %s reference scale (%.3f %.3f %.3f)", sd, st.ref_scale[side][sd].X, st.ref_scale[side][sd].Y, st.ref_scale[side][sd].Z))
         end
     end
+    -- Run 18:09 (user: "fix the position of the hands"): rotation now starts from the hand bone's own
+    -- reference-pose rotation (the rig's T/A pose: fingers out to the side), turned hands_auto_yaw (live, default
+    -- 90; right hand -, left hand +) so the fingers point forward, then the live hands_pitch/yaw/roll on top.
+    st.ref_rot = st.ref_rot or {}
+    st.ref_rot[side] = st.ref_rot[side] or {}
+    for _, sd in ipairs(seeds) do
+        if st.ref_rot[side][sd] == nil then
+            local ok, r = pcall(function() return comp:GetBoneRotationByName(fname(sd), COMP) end)
+            st.ref_rot[side][sd] = (ok and r) and { Pitch = r.Pitch, Yaw = r.Yaw, Roll = r.Roll } or { Pitch = 0, Yaw = 0, Roll = 0 }
+            log(string.format("hands: %s reference rotation p%.1f y%.1f r%.1f", sd, st.ref_rot[side][sd].Pitch, st.ref_rot[side][sd].Yaw, st.ref_rot[side][sd].Roll))
+        end
+    end
     local tiny, zero = vec(0.01, 0.01, 0.01), vec(0, 0, 0)
     for i = 0, nb - 1 do
         local n = names[i]
@@ -169,7 +181,10 @@ local function pose_hand(side)
             local f = fname(sd)
             local mx = side == 1 and 1 or -1
             comp:SetBoneLocationByName(f, vec(cfg.hands_x, mx * cfg.hands_y, cfg.hands_z), COMP)
-            comp:SetBoneRotationByName(f, rot(cfg.hands_pitch, mx * cfg.hands_yaw, mx * cfg.hands_roll), COMP)
+            local r0 = st.ref_rot[side][sd]
+            local base = kml:ComposeRotators(rot(r0.Pitch, r0.Yaw, r0.Roll), rot(0, -mx * cfg.hands_auto_yaw, 0))
+            local final = kml:ComposeRotators(base, rot(cfg.hands_pitch, mx * cfg.hands_yaw, mx * cfg.hands_roll))
+            comp:SetBoneRotationByName(f, final, COMP)
             local r, k = st.ref_scale[side][sd], cfg.hands_scale
             comp:SetBoneScaleByName(f, vec(r.X * k, r.Y * k, r.Z * k), COMP)
         end)
