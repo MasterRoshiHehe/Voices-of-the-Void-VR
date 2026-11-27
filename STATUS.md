@@ -15,7 +15,7 @@ session (or the other agent) picks up the work.
 - Publisher guidance and chosen scope: [dated sources in RESEARCH.md; user decision and unknowns]
 - Launch for testing: `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
-- Who owns the game install right now: **runtime thread** (from 2026-11-27 02:12, UEVR nightly-01143 quit-crash A/B, OpenXR, max 10 min; releases here when done)
+- Who owns the game install right now: nobody (menu thread released it 2026-11-27 02:16 after the flat click test). Next in queue: runtime thread (UEVR nightly quit-crash A/B), then controls retest.
 
 ## Rendering compatibility
 
@@ -75,6 +75,15 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 | 2026-11-27 00:39:22, 00:47:26, 00:57:09, 01:02:32, 01:07:06, 01:10:38 | same: 0xc0000409 (fail-fast) at 0x7ff82415c28f, module unknown (Application log event 1000) | runs 00:28, 00:43, 00:55, 01:01, 01:05, 01:09 | 5e690d8f, UEVR 1.05, **OpenXR (VDXR) only** | quitting the game, every time | Exit-time crash on UEVR OpenXR shutdown (not Lua: first two runs had no scripts). Gameplay unaffected; saves made before quitting are fine as far as known. Owner: runtime thread. |
 
 ## Log
+
+### 2026-11-27 Claude (menu thread): flat click test 02:13 -> injected clicks DO press menu buttons
+
+- Flat run (`run-vr.ps1 -NoInject -Feature menu-click`, user OK 01:12), driven from a PowerShell SendInput helper, screenshots of the game window after each try.
+- **Works:** `SendInput` with a correct `INPUT` struct (x64: 40 bytes, union at offset 8; cbSize must be 40), from a **DPI-aware** process (`SetProcessDPIAware`), sequence: absolute move to the button (`MOUSEEVENTF_MOVE|ABSOLUTE`, 0..65535 over the 2560x1440 desktop), a few 2-3 px relative moves (hover), ~150 ms wait, `LEFTDOWN`, ~100 ms, `LEFTUP`. Pressed "Proceed" on OMEGA WARNING (went to the main menu) and then "Settings" (settings screen opened).
+- **Doesn't work:** `PostMessage` WM_MOUSEMOVE/LBUTTONDOWN/UP to the game window (no reaction); a click with no preceding mouse move (cursor already on the button, no hover event): no reaction. My first SendInput tries also used a 48-byte struct, which SendInput rejects (returns 0, nothing sent).
+- Pitfall that likely explains the controls thread's failure: the desktop is 2560x1440 at 125 % scaling. A DPI-unaware process sees 2048x1152 and its SetCursorPos/absolute coordinates are scaled, so clicks land in the wrong place. The pointer plugin (and votv_controls.dll) must be per-monitor DPI aware or convert coordinates, and must send a move before the click.
+- So the laser pointer can drive menus with OS mouse input: move the cursor to the hit point (plus a hover move), trigger = down/up. No need to call Blueprint functions.
+- Static 2D screen: user 01:12 "the screen follows where I look": UEVR 1.05's 2D screen mode is head-locked and has no setting to pin it. Options being evaluated next (one per test): draw the menu frame on a world-fixed quad from the pointer plugin (it needs the panel pose anyway), or stay in stereo and hide the 3D scene behind UEVR's world-fixed UI panel.
 
 ### 2026-11-27 Claude (menu thread): pointer split agreed; click route to prove first
 
