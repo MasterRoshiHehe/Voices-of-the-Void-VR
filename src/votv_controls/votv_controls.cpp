@@ -104,12 +104,13 @@ public:
 
     void on_pre_engine_tick(API::UGameEngine*, float) override {
         const double t = now_ms();
-        if (t - settings_check_t_ > 1000) { settings_check_t_ = t; load_settings(false); poll_driver_file(); }
+        if (t - settings_check_t_ > 250) { settings_check_t_ = t; load_settings(false); poll_driver_file(); }
 
         if (t - uevr_check_t_ > 1000) { uevr_check_t_ = t; enforce_uevr_values(); }
         if (t - cfg_sent_t_ > 2000) { cfg_sent_t_ = t; API::get()->dispatch_lua_event("votv_cfg", settings_text_.c_str());
             if (presets_t_ == 0) load_presets(); else API::get()->dispatch_lua_event("votv_presets", presets_text().c_str()); presets_t_ = t; }
         if (t - settings_check_t_ < 50) poll_preset_saves();
+        if (t - presets_poll_t_ > 250) { presets_poll_t_ = t; reload_presets_if_changed(); }
 
         votv::PadState p;
         double pad_t;
@@ -443,7 +444,18 @@ private:
         API::get()->dispatch_lua_event("votv_presets", presets_text().c_str());
     }
     // The Lua panel can't write files, so it logs "PRESETS SAVE <text>"; read new UEVR log lines every second.
+    fs::file_time_type presets_mtime_{};
+    double presets_poll_t_{0};
+    void reload_presets_if_changed() {   // Hand-Tuner.bat writes the file directly
+        std::error_code ec;
+        auto mt = fs::last_write_time(dir_ / "votv_hand_presets.txt", ec);
+        if (ec || mt == presets_mtime_) return;
+        presets_mtime_ = mt;
+        parse_presets(read_file(dir_ / "votv_hand_presets.txt"));
+        API::get()->dispatch_lua_event("votv_presets", presets_text().c_str());
+    }
     void poll_preset_saves() {
+        reload_presets_if_changed();
         std::ifstream f(dir_ / "log.txt", std::ios::binary);
         if (!f) return;
         f.seekg(0, std::ios::end);

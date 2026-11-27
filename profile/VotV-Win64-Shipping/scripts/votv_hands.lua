@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_curl_deg = 80, hands_mcp = 55, hands_pip = 70, hands_dip_ratio = 0.6, hands_relax = 0.1, hands_splay = 0, hands_thumb_opp = 0, hands_curl_axis = 0, hands_curl_sign = 1, hands_thumb_axis = 0, hands_relax_deg = 10, hands_seg1 = 0.8, hands_seg2 = 1.0, hands_seg3 = 0.67, hands_thumb_sign = 1, hands_f_thumb = 1, hands_f_index = 2, hands_f_middle = 3, hands_f_ring = 4, hands_r_yaw = -90, hands_r_roll = 90, hands_l_yaw = -90, hands_l_roll = -90, hands_style = 1, hands_scale = 1,
+local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_preview = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_curl_deg = 80, hands_mcp = 55, hands_pip = 70, hands_dip_ratio = 0.6, hands_relax = 0.1, hands_splay = 0, hands_thumb_opp = 0, hands_curl_axis = 0, hands_curl_sign = 1, hands_thumb_axis = 0, hands_relax_deg = 10, hands_seg1 = 0.8, hands_seg2 = 1.0, hands_seg3 = 0.67, hands_thumb_sign = 1, hands_f_thumb = 1, hands_f_index = 2, hands_f_middle = 3, hands_f_ring = 4, hands_r_yaw = -90, hands_r_roll = 90, hands_l_yaw = -90, hands_l_roll = -90, hands_style = 1, hands_scale = 1,
               flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 500, hands_force_mat = 0, flash_copy_game = 1, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
@@ -620,6 +620,35 @@ local function apply_fingers(side)
     end
 end
 
+-- Pose presets per button state (user 19:19). The controls plugin owns them (it reads the buttons and keeps
+-- votv_hand_presets.txt); it sends them here as "votv_presets" events, and the panel edits them and saves by
+-- logging "PRESETS SAVE ..." (Lua can't write files; the plugin picks the line up within a second and writes the file).
+local PRESET_NAMES = { "open", "trigger", "grip", "fist", "thumb_rest", "thumb_press" }
+local PRESET_LABELS = { "open hand (nothing pressed)", "trigger pulled", "grip held", "grip + trigger (fist)",
+                        "thumb resting on a button", "thumb pressing a button" }
+local presets = {}
+local preset_sel, preview = 1, false
+pcall(function()
+    uevr.sdk.callbacks.on_lua_event(function(name, data)
+        if name ~= "votv_presets" then return end
+        for line in tostring(data):gmatch("[^\n]+") do
+            local k, rest = line:match("^(%w+_?%w*)=(.*)$")
+            if k then
+                local v = {}
+                for n in rest:gmatch("%-?[%d%.]+") do v[#v + 1] = tonumber(n) end
+                if #v == 5 and (not preview or presets[k] == nil) then presets[k] = v end
+            end
+        end
+    end)
+end)
+local function show_preview()
+    local p = presets[PRESET_NAMES[preset_sel]]
+    if p == nil then return end
+    for side = 0, 1 do for f = 1, 5 do curls[side][f] = p[f] end end
+    st.curl_force = true
+end
+
+
 local diag_t = 0
 local function hand_diag(delta)
     diag_t = diag_t + delta
@@ -670,6 +699,14 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
         end
         pcall(sync_light)
         pcall(hand_diag, delta)
+        -- Hand-Tuner preview (hands_preview 1..6): show that preset on both hands instead of the buttons
+        if cfg.hands_preview ~= nil and cfg.hands_preview >= 1 then
+            local pz = presets[PRESET_NAMES[math.floor(cfg.hands_preview)]]
+            if pz then
+                st.manual = true
+                for side = 0, 1 do for f = 1, 5 do if curls[side][f] ~= pz[f] then curls[side][f] = pz[f]; st.curl_force = true end end end
+            end
+        elseif st.manual and not preview then st.manual = false end
         if curl_dirty or st.curl_force then curl_dirty = false; st.curl_force = false; for side = 0, 1 do apply_fingers(side) end end
         if st.torch ~= nil and st.game_light ~= nil then
             local on = cfg.flash_model ~= 0 and st.game_light:IsVisible()
@@ -681,40 +718,12 @@ end)
 
 
 
--- Pose presets per button state (user 19:19). The controls plugin owns them (it reads the buttons and keeps
--- votv_hand_presets.txt); it sends them here as "votv_presets" events, and the panel edits them and saves by
--- logging "PRESETS SAVE ..." (Lua can't write files; the plugin picks the line up within a second and writes the file).
-local PRESET_NAMES = { "open", "trigger", "grip", "fist", "thumb_rest", "thumb_press" }
-local PRESET_LABELS = { "open hand (nothing pressed)", "trigger pulled", "grip held", "grip + trigger (fist)",
-                        "thumb resting on a button", "thumb pressing a button" }
-local presets = {}
-local preset_sel, preview = 1, false
-pcall(function()
-    uevr.sdk.callbacks.on_lua_event(function(name, data)
-        if name ~= "votv_presets" then return end
-        for line in tostring(data):gmatch("[^\n]+") do
-            local k, rest = line:match("^(%w+_?%w*)=(.*)$")
-            if k then
-                local v = {}
-                for n in rest:gmatch("%-?[%d%.]+") do v[#v + 1] = tonumber(n) end
-                if #v == 5 and (not preview or presets[k] == nil) then presets[k] = v end
-            end
-        end
-    end)
-end)
-local function show_preview()
-    local p = presets[PRESET_NAMES[preset_sel]]
-    if p == nil then return end
-    for side = 0, 1 do for f = 1, 5 do curls[side][f] = p[f] end end
-    st.curl_force = true
-end
-
 -- Hand debug panel (user 2026-11-27 19:17: "an ingame debug menu where I could set the hand poses myself", as in
 -- the Sims 4 VR mod). Drawn in UEVR's own menu (open it in VR with both stick clicks, or Insert on the keyboard;
 -- the panel is under the Lua scripts section). Every slider applies at once. "Manual pose" freezes the fingers on
 -- the sliders below instead of buttons/tracking. UEVR 1.05 Lua can't write files, so "Log values" writes all
 -- current values to the UEVR log as one line; tell Claude, and they go into scripts/votv_controls.txt.
-local ui_ok = pcall(function()
+local ui_ok = imgui ~= nil and pcall(function()
     uevr.sdk.callbacks.on_draw_ui(function()
         local function fslider(label, key, lo, hi, place)
             local changed, v = imgui.slider_float(label, cfg[key], lo, hi)
@@ -792,6 +801,6 @@ local ui_ok = pcall(function()
         end
     end)
 end)
-log("debug panel " .. (ui_ok and "registered in the UEVR menu" or "not available (no on_draw_ui)"))
+log("debug panel " .. (ui_ok and "registered in the UEVR menu" or "not available (UEVR 1.05 scripts have no imgui; use Hand-Tuner.bat on the desktop)"))
 
 log("loaded (idle until the controls plugin is seen)")

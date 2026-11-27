@@ -1,1 +1,5 @@
-menu_unconstrain_aspect=1
+menu_lock_view=0
+menu_ipd_cm=6.4
+menu_eye_sign=1
+menu_map_pattern=/game/menu%.menu
+menu_unconstrain_aspect=0
