@@ -20,6 +20,7 @@
 
 #include "uevr/Plugin.hpp"
 #include "mapper.hpp"
+#include "xr_hands.hpp"
 #include <openvr.h>   // SteamVR skeletal input (Index per-finger curl); tools/openvr-sdk headers, loaded via UEVR's openvr_api.dll
 
 using namespace uevr;
@@ -62,6 +63,11 @@ WORD vk_for(const std::string& k) {
 
 class VotvControls : public Plugin {
 public:
+    void on_dllmain() override {
+        // before UEVR creates its OpenXR instance (~2 s later): add hand tracking (xr_hands.hpp). Not under the loader lock.
+        CreateThread(nullptr, 0, [](LPVOID) -> DWORD { xrh::install(); return 0; }, nullptr, 0, nullptr);
+    }
+
     void on_initialize() override {
         dir_ = API::get()->get_persistent_dir();
         trace_.open(dir_ / "votv_controls_trace.txt", std::ios::app);
@@ -193,6 +199,8 @@ private:
     float turn_speed_{120}, turn_deadzone_{0.2f}, yaw_scale_{2.5f};
     int turn_method_{0};
     float finger_speed_{14}, thumb_rest_{0.6f};
+    xrh::Tracker xr_;
+    int hand_tracking_{1};
     UEVR_ActionHandle touch_h_[2][3]{};
     const char* touch_right_[3]{"/actions/default/in/AButtonTouchRight", "/actions/default/in/BButtonTouchRight", "/actions/default/in/ThumbrestTouchRight"};
     const char* touch_left_[3]{"/actions/default/in/AButtonTouchLeft", "/actions/default/in/BButtonTouchLeft", "/actions/default/in/ThumbrestTouchLeft"};
@@ -279,6 +287,7 @@ private:
         turn_method_ = (int)num("ctl_turn_method", 0);
         finger_speed_ = num("ctl_finger_speed", 14);
         thumb_rest_ = num("ctl_thumb_rest", 0.6f);
+        hand_tracking_ = (int)num("ctl_hand_tracking", 1);
         int aim = (int)num("ctl_aim_method", 1);   // UEVR enum: 0 game, 1 head, 2 right controller, 3 left; hand ray: votv_hand_aim.lua
         if (s.left_handed && aim == 2) aim = 3;
         if (aim >= 0 && aim <= 5) aim_method_ = aim;
@@ -333,8 +342,19 @@ private:
         finger_t_ = t;
         for (int side = 0; side < 2; ++side) {
             float target[5];
-            std::string src = "skeletal";
-            if (!skeletal(side, target)) {
+            std::string src = "openxr hand tracking";
+            bool got = false;
+            if (API::VR::is_openxr() && hand_tracking_ != 0) {
+                auto* ox = API::get()->param()->openxr;
+                if (!xr_.tried && ox->get_xr_session() != nullptr) {
+                    if (!xrh::g_log.empty()) event("fingers: " + xrh::g_log);
+                    xr_.init((XrInstance)ox->get_xr_instance(), (XrSession)ox->get_xr_session());
+                    event("fingers: " + xr_.status);
+                }
+                if (xr_.ok) got = xr_.curls((XrSpace)ox->get_stage_space(), side, target);
+            }
+            if (!got) src = "skeletal";
+            if (!got && !skeletal(side, target)) {
                 src = "buttons";
                 const bool right = side == 1;
                 const float trig = right ? p.rt : p.lt;
