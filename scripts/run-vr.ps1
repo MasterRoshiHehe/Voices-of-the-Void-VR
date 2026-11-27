@@ -176,6 +176,13 @@ try {
     Write-RunLog "launch $exe $($GameArgs -join ' ') | inject=$(-not $NoInject) delay=${InjectDelaySeconds}s"
     $knownHash = '5e690d8f62fe6ce5b9d46815dd05ced45e52a4f110e91f0b6248bbacbe96f6cc'
     if ($exeHash -ne $knownHash) { Write-RunLog "WARNING: game exe differs from the build in RESEARCH.md §0 ($knownHash)" }
+    # Other mod loaders next to the exe (Thunderstore shimloader / UE4SS as dwmapi.dll, UE4SS.dll, ...):
+    # untested together with UEVR, and some early 0.9.0 builds crash on them (docs/MODDING-WIKI.md).
+    $win64 = Split-Path $shipping
+    $extra = @(Get-ChildItem $win64 -Force | Where-Object { $_.Name -ne "$procName.exe" } | ForEach-Object Name)
+    Write-RunLog "game Win64 folder extras: $(if ($extra) { $extra -join ', ' } else { 'none' })"
+    $loaders = @($extra | Where-Object { $_ -match '^(dwmapi|UE4SS|xinput1_3|version|winmm|dinput8|d3d11|dxgi)\.dll$|^(ue4ss|shimloader)$' })
+    if ($loaders) { Write-RunLog "WARNING: mod loader files next to the game exe: $($loaders -join ', '). UEVR together with them is untested." }
 
     # Profile: seed from the repo baseline only if missing (or on request).
     New-Item -ItemType Directory -Force $profileDir | Out-Null
