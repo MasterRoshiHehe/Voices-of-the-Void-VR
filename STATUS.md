@@ -15,7 +15,7 @@ session (or the other agent) picks up the work.
 - Publisher guidance and chosen scope: [dated sources in RESEARCH.md; user decision and unknowns]
 - Launch for testing: `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
-- Who owns the game install right now: graphics session, probe-only baseline run (OpenXR); claimed 2026-11-27 01:43, deadline 02:28. Clear when the run ends.
+- Who owns the game install right now: nobody (menu session released it 2026-11-27 02:01; it made offline changes only)
 
 ## Rendering compatibility
 
@@ -69,15 +69,58 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 | Date | Signature (module+offset or error ID) | Run | Build and settings | Doing what | Linked issue |
 |---|---|---|---|---|---|
+| 2026-11-27 01:50:38 | same: 0xc0000409 (fail-fast) at 0x7ff82415c28f, module unknown (Application log event 1000) | `logs\2026-11-27_01-45-25` (graphics thread, feature graphics-baseline) | UEVR 1.05, OpenXR (VDXR), probe-only votv_graphics.lua | quitting the game (crash 3 s before run.txt "game exited") | same as the known OpenXR quit crash above |
 | 2026-11-27 01:23:29 | VotV-Win64-Shipping.exe, module unknown, 0xc0000409 at 0x7ff82415c28f (Windows Application log, event 1000) | start time matches the 01:22 run (`logs\2026-11-27_01-22-21`, menu thread) | 5e690d8f, UEVR 1.05 OpenXR | quitting the game (crash 2-3 s before run.txt's "game exited") | **Verdict (menu thread, 01:36): not caused by the menu logging.** Same signature on every OpenXR-injected run's exit since 00:39, including 00:39 and 00:47 when no Lua scripts existed yet; none on OpenVR runs (00:22, 00:26, 01:17) or -NoInject flat runs (01:30, 01:31, 01:32). See the row below. |
 | 2026-11-27 01:28:34 | same signature, 0xc0000409 at 0x7ff82415c28f | start time matches the 01:27 run (`logs\2026-11-27_01-27-26`, menu thread) | 5e690d8f, UEVR 1.05 OpenXR | quitting the game (crash 2-3 s before run.txt's "game exited") | **Verdict (menu thread, 01:36): not caused by the menu logging.** Same signature on every OpenXR-injected run's exit since 00:39, including 00:39 and 00:47 when no Lua scripts existed yet; none on OpenVR runs (00:22, 00:26, 01:17) or -NoInject flat runs (01:30, 01:31, 01:32). See the row below. |
 | 2026-11-27 00:39:22, 00:47:26, 00:57:09, 01:02:32, 01:07:06, 01:10:38 | same: 0xc0000409 (fail-fast) at 0x7ff82415c28f, module unknown (Application log event 1000) | runs 00:28, 00:43, 00:55, 01:01, 01:05, 01:09 | 5e690d8f, UEVR 1.05, **OpenXR (VDXR) only** | quitting the game, every time | Exit-time crash on UEVR OpenXR shutdown (not Lua: first two runs had no scripts). Gameplay unaffected; saves made before quitting are fine as far as known. Owner: runtime thread. |
 
 ## Log
 
+### 2026-11-27 Claude (menu thread): main menu back to a flat 2D screen (ready to test)
+
+- User 00:55: "menu is exactly as messed up as it has been so far. just make it back to a 2d menu". That was the graphics run `logs6-11-27_01-45-25`: the BackgroundBlur hide was **not active** there (staged off; no `menu: hid` lines in its log), so the blur hypothesis is untested. Parked with the view lock, both default off.
+- Same run: settings still not loaded (`script dir nil via none`): neither UEVR's persistent-dir function nor `debug.getinfo` is reachable from UEVR 1.05 Lua, so `scriptsotv\settings.lua` can't be found and the scripts run on their defaults. Defaults are therefore what ships: menu_2d on, lock off, nothing hidden. Settings file kept for when a path is found (or a later UEVR).
+- Cursor data, same run: in the menu `bShowMouseCursor=false`, `DefaultMouseCursor=1`, `CurrentMouseCursor=1`, so the game isn't asking for the OS cursor there; the menu's pointer must come from somewhere else (to find next).
+- **Change:** `votv_menu_camera.lua` sets UEVR's `VR_2DScreenMode=true` while the world is `/Game/menu.menu` and `false` everywhere else, applied only when the wanted value changes (also on the first tick, so a saved 2D config from a run that quit in the menu is undone in preLoad). Pause menu is in the gameplay world, so it stays 3D. Same mechanism that worked live at 01:05 (`set_mod_value` applied 2D immediately). Stub run, with and without the settings module: preLoad 2D off, menu on, gameplay off, back to menu on.
+
+### 2026-11-27 Claude (graphics thread): suspended by user
+
+- **Suspended at the user's request** (the game runs at 70+ fps in the headset and looks great). Nothing of this thread changes rendering now.
+- Baseline: steady 72 Hz on OpenXR (VD, Quest 3), run `logs\2026-11-27_01-45-25`, probe only. The only FAIL was the known OpenXR quit crash.
+- Effects the game has on (cvars, the same in the menu and in gameplay, never changed by the game during the run):
+  - MotionBlurQuality=3 at MotionBlur.Amount=0.1
+  - DepthOfFieldQuality=2
+  - SceneColorFringeQuality=1 (chromatic aberration)
+  - Tonemapper.GrainQuantization=1
+  - LensFlareQuality=2
+  - TAA (r.DefaultFeature.AntiAliasing=2, Tonemapper.Sharpen=1)
+- The game's own camera options, for comfort later: headbob strength and tilt, viewmodel bob, align view to floor.
+- Branch `feature/vr-graphics-comfort` (not merged into dev), last code commit `55ab0f5`: votv_graphics.lua with the cvar logger, the frame timer, map/loc scene tags, missed-frame counts, and opt-in overrides with live revert. Only mock-tested; the new version hasn't run in game.
+- Removed from the shared working tree: `profile\VotV-Win64-Shipping\scripts\votv_graphics.lua` (safe on the branch) and the gfx block in `scripts\votv\settings.lua` (menu keys untouched).
+- **Not removed yet:** the live UEVR profile copy, `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\scripts\votv_graphics.lua` and the gfx lines in that folder's `votv\settings.lua`. The menu session held the lock at 01:57. That copy is read-only (probe only), but it still runs and logs in every UEVR launch until someone deletes it while the lock reads nobody, because run-vr.ps1 never deletes profile scripts.
+- Open items:
+  - SteamVR baseline.
+  - The settings require path: UEVR's working directory is the scripts folder only while scripts load. debug.getinfo and get_persistent_dir gave nothing. A launcher-written `votv\paths.lua` is supported but not generated yet.
+  - Check the missed-frame counter and the scene tags in game.
+  - The nvidia-smi GPU sampler for headroom, not started.
+
+### 2026-11-27 Claude (graphics thread): probe-only baseline run, OpenXR
+
+- Run `logs\2026-11-27_01-45-25` (01:45-01:50, OpenXR via VD, Quest 3, `-Feature graphics-baseline`, overrides off). Verdict FAIL on one check only: `win-crash`, the known quit crash 0xc0000409 at 0x7ff82415c28f (ledger row added). Eyes UNSURE (no capture on VDXR); user was in the headset.
+- **Game cvars at startup, menu and gameplay the same; no `cvar changed` lines all run:**
+  - AA: r.DefaultFeature.AntiAliasing=2 (TAA), PostProcessAAQuality=2, TemporalAASamples=4, TemporalAACurrentFrameWeight=0.2, TemporalAAFilterSize=1, MSAACount=4, ForwardShading=0.
+  - Post: MotionBlurQuality=3, MotionBlur.Amount=0.1, MotionBlur.Max=-1, DepthOfFieldQuality=2, SceneColorFringeQuality=1, SceneColorFringe.Max=-1, LensFlareQuality=2, BloomQuality=0, Tonemapper.Quality=5, Tonemapper.GrainQuantization=1, Tonemapper.Sharpen=1, EyeAdaptationQuality=2.
+  - Other: ScreenPercentage=100, SSR.Quality=2, VolumetricFog=1, sg.AntiAliasingQuality=1, sg.PostProcessQuality=2.
+- **Frame times (engine tick delta, not GPU timing), per map, steady windows (max under 100 ms):**
+  - menu: 9 windows, n=6479, mean 13.90 ms, p50 13.90-14.01, p95 14.53-14.80, p99 15.02-15.09, max 34.65. The load window held a 4069 ms max.
+  - Untitled_1 (gameplay world): 12 windows, n=8640, mean 13.89 ms, p50 14.00-14.02, p95 14.59-15.00, p99 15.03-15.31, max 17.23. Load windows: 5487 ms and 732 ms max.
+  - So the game is paced at the 72 Hz headset refresh with no hitches after loading. **The over72/over90 counters are meaningless at a 72 Hz lock** (frames land on 13.9-14.0 ms, so about 60% count as over72 from jitter alone); to be changed to missed-frame counts (over 1.5x budget).
+- Probe issue: the settings read worked once at load, then `module votv/settings not found` from 01:46:30 (`debug.getinfo` gave no script dir in this script, so the first require only worked through another script's package.path). Harmless here (defaults are probe-only); to fix before any override run.
+- Scene coverage: only the menu and the first gameplay minutes (no night or outdoor-heavy scene yet).
+
 ### 2026-11-27 Claude (menu thread): flat menu picture = ui_menu_C's BackgroundBlur; hide staged (graphics thread holds the lock)
 
-- Probe output from the controls run `logs6-11-27_01-40-29` (menu world 01:40:58): `ui_menu_C` has 7,870 widgets. Among its **direct** children (not under umg_* sub-screens) the only ones that can show the scene are **two BackgroundBlur widgets, `BackgroundBlur_76` and `BackgroundBlur`, both visibility 4 (SelfHitTestInvisible = drawn)**. The other direct children with resources are `Image_12`/`Image_178` (material `/Game/satGrad`) and `Image_0` (collapsed). No image holds a render target or scene texture. A BackgroundBlur draws a blurred copy of the frame behind it; under UEVR the UI is drawn into its own texture, so this would put a flat copy of the game view onto the UI panel in front of the real 3D scene. That matches the eye captures at 01:13 (framed flat copy of the dishes on the panel). Evidence is strong but indirect: it's the only scene-sampling widget there, not yet proven by hiding it.
+- Probe output from the controls run `logs\2026-11-27_01-40-29` (menu world 01:40:58): `ui_menu_C` has 7,870 widgets. Among its **direct** children (not under umg_* sub-screens) the only ones that can show the scene are **two BackgroundBlur widgets, `BackgroundBlur_76` and `BackgroundBlur`, both visibility 4 (SelfHitTestInvisible = drawn)**. The other direct children with resources are `Image_12`/`Image_178` (material `/Game/satGrad`) and `Image_0` (collapsed). No image holds a render target or scene texture. A BackgroundBlur draws a blurred copy of the frame behind it; under UEVR the UI is drawn into its own texture, so this would put a flat copy of the game view onto the UI panel in front of the real 3D scene. That matches the eye captures at 01:13 (framed flat copy of the dishes on the panel). Evidence is strong but indirect: it's the only scene-sampling widget there, not yet proven by hiding it.
 - Settings still not loaded at 01:40 (`script dir nil`): `debug.getinfo` gave no path in game. The script now tries UEVR's persistent dir first (`uevr.params.functions.get_persistent_dir`, API.h, + `\scripts\`) in a few call styles, then debug.getinfo, and logs which one worked.
 - **Staged, not active**: hiding `BackgroundBlur_76` and `BackgroundBlur` in the menu world (`menu_hide_widgets` / `DEFAULT_HIDE`); both lists are `{}` until the menu test owns the game, so the graphics thread's baseline run is unaffected. Stub-tested: hidden in the menu, restored on leaving, nested `umg_stats.BackgroundBlur` untouched. Also logs the PlayerController's `bShowMouseCursor` / `DefaultMouseCursor` / `CurrentMouseCursor` on each world change (cursor diagnosis, logging only).
 - Cursor plan (after the blur result): if `bShowMouseCursor` is true in the menu, the game uses the OS hardware cursor, which UEVR's UI texture doesn't contain. Options: (a) a software cursor drawn on UEVR's UI panel, (b) the controls thread's laser pointer driving the menu. Decide with that log line and the controls thread.
@@ -104,7 +147,7 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 ### 2026-11-27 Claude (controls thread): first in-game runs of the controls plugin (01:34, 01:36), blocked at the content warning
 
-- Run `logs6-11-27_01-34-54` (OpenXR, `-Controls`): **plugin loads in UEVR 1.05** (`[votv-ctl] start`), reads all 21 bindings from Input.ini, settings file read, aim=2 and snap turn set. It went straight to `blocked: no_pad` (no XInput callback yet: nobody had the controllers on). The UEVR menu was open on start; I closed it with Insert.
+- Run `logs\2026-11-27_01-34-54` (OpenXR, `-Controls`): **plugin loads in UEVR 1.05** (`[votv-ctl] start`), reads all 21 bindings from Input.ini, settings file read, aim=2 and snap turn set. It went straight to `blocked: no_pad` (no XInput callback yet: nobody had the controllers on). The UEVR menu was open on start; I closed it with Insert.
 - **Blocker: I couldn't get past the game's first screen ("OMEGA WARNING", Proceed/Quit) automatically.** Injected mouse clicks on Proceed were ignored, both flat (run 01:36 with a 150 s inject delay, before UEVR) and with UEVR: SetCursorPos+mouse_event, then SendInput absolute moves+click (SendInput returned 1 for every event), with the cursor confirmed on the button and `WindowFromPoint` = the game's UnrealWindow. Keyboard injection does reach the game (F11 toggled fullscreen), Enter did nothing. Cause not known. **Risk for the plugin:** the trigger sends LMB the same way, so check `input_fire` in gameplay before trusting it.
 - At about 01:38 the Windows Start menu opened on the desktop without any input from me (I think the user was at the PC), so I stopped the automation and killed the game. **Run 01:36 verdict FAIL `run-error: game exited during the inject delay`: caused by my Stop-Process, not a game fault.** `win-crash`: no Windows crash event for the game during the run. Its `runtime-up`/`rhi` PASS lines can't be from this run (UEVR never injected), so check-run must have read the previous run's log.txt: a false PASS for the runtime thread to look at.
 - Next: one user-assisted run (`Test-Controls.bat`: user clicks Proceed and loads a save, then wears the headset; I run the scripted driver checks from `tests/controls/basic_buttons.txt` and then they try it).
@@ -240,7 +283,7 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 - `run-vr.ps1 -Runtime OpenXR|OpenVR` (default OpenXR). OpenVR sets the profile runtime and this injector's radio for that run only; the finally block restores OpenXR in both (after the injector closes and after the run's config is copied). Only this injector's settings file is touched (never the user's other UEVR install). The SteamVR-runtime warning only applies to OpenXR runs.
 - **Game folder change:** added `F:\Games\Voices of the Void\Play-VOTV-VR-SteamVR.bat` (calls the dev script with `-Runtime OpenVR`); also `Play-VOTV-VR-SteamVR.bat` in the repo root.
 - Dry-run tested after the HUD run ended (00:47): game-folder `Play-VOTV-VR-SteamVR.bat -DryRun` set profile runtime + injector radio to OpenVR, stopped before launch, then restored both to OpenXR (checked in the files); the user's E: injector settings hash unchanged (d212dab9...). Normal `Play-VOTV-VR.bat -DryRun` still OpenXR. Not yet run with the game.
-- HUD-fix run `logs6-11-27_00-43-09` (00:43-00:47): OpenXR via VD, `VR_DecoupledPitchUIAdjust=false` in effect, clean exit and full log copy. **User 23:48: "the HUD did stay put": HUD pitch fix confirmed on OpenXR.** Item selection still works.
+- HUD-fix run `logs\2026-11-27_00-43-09` (00:43-00:47): OpenXR via VD, `VR_DecoupledPitchUIAdjust=false` in effect, clean exit and full log copy. **User 23:48: "the HUD did stay put": HUD pitch fix confirmed on OpenXR.** Item selection still works.
 
 ### 2026-11-27 Claude: OpenXR run playable; HUD pitch change for next test
 
