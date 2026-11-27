@@ -10,14 +10,17 @@
 --   gfx_reapply_interval_s = 2     how often overrides are checked and re-applied if the value differs (min 0.5)
 --   gfx_override_enable = 0        master switch for gfx_set (0 = probe only)
 --   gfx_set = { ["r.MotionBlurQuality"] = 0 }   cvar -> number; only applied while gfx_override_enable = 1
--- Log lines go to UEVR's log.txt via uevr.params.functions.log_info, prefixed "[votv-gfx]".
+-- Live A/B: removing a cvar from gfx_set, or setting gfx_override_enable = 0, restores the value the game had
+-- before our first write ("override reverted name -> original").
+-- Log lines go to UEVR's log.txt via uevr.params.functions.log_info, prefixed "[votv-gfx]". Frame-stats and
+-- cvar lines carry "map=<world> loc=<x,y,z>" (player pawn location in metres) so scenes in one map can be told apart.
 --
 -- Frame times come from on_pre_engine_tick's delta (engine delta seconds: affected by the game's max-delta
 -- clamp and time dilation, not a GPU or compositor measurement). Use it to compare scenes and A/B runs, and
 -- confirm headline numbers with an external capture.
 --
--- Only UEVR-provided APIs are used (uevr.*, require, debug.getinfo); UEVR 1.05's Lua has no fs/io/os and
--- print() does not reach log.txt (both found by the menu thread, STATUS.md 2026-11-27). Everything runs in pcall.
+-- Only UEVR-provided APIs are used (uevr.*, require); UEVR 1.05's Lua has no fs/io/os and print() does not
+-- reach log.txt (both found by the menu thread, STATUS.md 2026-11-27). Everything runs in pcall.
 
 local api = uevr.api
 local TAG = "[votv-gfx] "
@@ -42,17 +45,45 @@ end
 
 -- ---------------------------------------------------------------- settings
 
--- require() search path: UEVR 1.05 leaves package.path at the game's exe folder, so add this script's folder.
-local script_dir = nil
-pcall(function() script_dir = debug.getinfo(1, "S").source:match("^@(.*[\\/])") end)
+-- require() search path. UEVR 1.05 leaves package.path at the game's exe folder plus ".\?.lua", and the
+-- working directory is the profile's scripts folder only while scripts load (run 2026-11-27_01-45-25: the
+-- load-time require worked, the next one 3 s later did not). debug.getinfo and get_persistent_dir gave no
+-- folder (menu thread, same runs). So the folder comes from the first candidate that answers:
+--   debug.getinfo source ("@path" or "=path"), UEVR persistent dir (+ \scripts), and finally an optional
+--   scripts\votv\paths.lua returning { scripts_dir = [[...]] } (NOT generated yet: a launcher would write it
+--   into the profile each run; it must never be committed, since it holds a local path), required once at
+--   load while ".\" still resolves to the scripts folder.
+-- The resolved folder and its source are logged once. With none, the load-time settings (read while ".\"
+-- still works) stay in use as the last good settings, so live edits are not picked up in that case.
+local script_dir, script_dir_from = nil, "none"
+local function try_dir(from, f)
+    if script_dir ~= nil then return end
+    local ok, d = pcall(f)
+    if ok and type(d) == "string" and #d > 0 then
+        if not d:find("[\\/]$") then d = d .. "\\" end
+        script_dir, script_dir_from = d, from
+    end
+end
+try_dir("debug.getinfo", function()
+    local info = debug.getinfo(1, "S")
+    return (info.source:match("^[@=](.*[\\/])")) or (info.short_src:match("^(.*[\\/])"))
+end)
+try_dir("functions.get_persistent_dir", function() return uevr.params.functions.get_persistent_dir() .. "\\scripts" end)
+try_dir("api:get_persistent_dir", function() return uevr.api:get_persistent_dir() .. "\\scripts" end)
+try_dir("votv/paths.lua", function()
+    package.loaded["votv/paths"] = nil
+    local t = require("votv/paths")
+    return type(t) == "table" and t.scripts_dir or nil
+end)
 if script_dir ~= nil and not package.path:find(script_dir, 1, true) then
     pcall(function() package.path = script_dir .. "?.lua;" .. package.path end)
 end
+log("scripts folder for require: " .. tostring(script_dir) .. " (via " .. script_dir_from .. ")")
 
 local DEFAULTS = { gfx_log_interval_s = 10, gfx_reapply_interval_s = 2, gfx_override_enable = 0 }
 
 -- Logs "settings: ok ... / missing (...)" at startup and whenever that result changes, so a silent fallback
--- to the defaults can't hide.
+-- can't hide.
 local last_read_status = nil
 local function note_read_status(status)
     if status ~= last_read_status then
@@ -60,6 +91,8 @@ local function note_read_status(status)
         log("settings (scripts/votv/settings.lua): " .. status)
     end
 end
+
+local last_good = nil   -- last successfully parsed settings; kept when a later read fails
 
 local function read_settings()
     local s = { overrides = {} }
@@ -69,7 +102,12 @@ local function read_settings()
         return require("votv/settings")
     end)
     if not ok or type(t) ~= "table" then
-        note_read_status("missing (script dir " .. tostring(script_dir) .. "; " .. tostring(t) .. "): defaults, overrides off")
+        local err = (tostring(t):gsub("\n.*", ""))
+        if last_good ~= nil then
+            note_read_status("read failed (" .. err .. "): keeping the last good settings")
+            return last_good
+        end
+        note_read_status("missing (" .. err .. "): defaults, overrides off")
         return s
     end
     for k, _ in pairs(DEFAULTS) do
@@ -93,6 +131,7 @@ local function read_settings()
         s.gfx_log_interval_s, s.gfx_reapply_interval_s, s.gfx_override_enable, table.concat(names, " ")))
     if s.gfx_log_interval_s < 1 then s.gfx_log_interval_s = 1 end
     if s.gfx_reapply_interval_s < 0.5 then s.gfx_reapply_interval_s = 0.5 end
+    last_good = s
     return s
 end
 
@@ -108,11 +147,11 @@ local WATCHED = {
     "sg.AntiAliasingQuality", "sg.PostProcessQuality",
 }
 
-local cvar_cache = {}   -- name -> variable object, or false when not found
+local cvar_cache = {}
 
 local function find_cvar(name)
     local c = cvar_cache[name]
-    if c ~= nil then return c or nil end
+    if c ~= nil then return c end
     local v = try(function()
         local cm = api:get_console_manager()
         if cm == nil then return nil end
@@ -142,15 +181,53 @@ local function cvar_number(name)
     return f
 end
 
--- ---------------------------------------------------------------- scene name
+local function number_text(x)
+    if x == nil then return "nil" end
+    if math.abs(x - math.floor(x)) < 1e-6 then return string.format("%d", math.floor(x)) end
+    return string.format("%.6g", x)
+end
+
+-- Writes a value: set_int / set_float first, the console command if the read-back differs.
+local function write_cvar(name, value, text)
+    local v = find_cvar(name)
+    if v == nil then return "missing", nil end
+    local method = "set"
+    local ok = pcall(function()
+        if text:find("[%.eE]") then v:set_float(value) else v:set_int(math.floor(value)) end
+    end)
+    local after = cvar_number(name)
+    if not ok or after == nil or math.abs(after - value) >= 1e-4 then
+        method = "execute_command"
+        pcall(function() api:execute_command(name .. " " .. text) end)
+        after = cvar_number(name)
+    end
+    return method, after
+end
+
+-- ---------------------------------------------------------------- scene tagging
 
 local function map_name()
     return try(function()
-        local engine = api:get_engine()
-        local world = engine.GameViewport.World
+        local world = api:get_engine().GameViewport.World
         local n = name_of(world)
         return (n:match("([^%s%.:]+)$")) or n
     end, "?")
+end
+
+-- Player pawn location in metres (UE units are cm), rounded to 1 m: "x,y,z", "nopawn" or "?".
+local function pawn_loc()
+    return try(function()
+        local pc = api:get_player_controller(0)
+        local pawn = try(function() return pc:K2_GetPawn() end, nil) or try(function() return pc.Pawn end, nil)
+        if pawn == nil then return "nopawn" end
+        local p = pawn:K2_GetActorLocation()
+        local function m(v) return string.format("%d", math.floor(v / 100 + 0.5)) end
+        return m(p.X) .. "," .. m(p.Y) .. "," .. m(p.Z)
+    end, "?")
+end
+
+local function scene_tag()
+    return "map=" .. map_name() .. " loc=" .. pawn_loc()
 end
 
 -- ---------------------------------------------------------------- cvar logger
@@ -164,14 +241,14 @@ local function dump_cvars(reason)
         last_values[n] = t
         table.insert(parts, n .. "=" .. t)
     end
-    log("cvars (" .. reason .. ", map " .. map_name() .. "): " .. table.concat(parts, " "))
+    log("cvars (" .. reason .. ", " .. scene_tag() .. "): " .. table.concat(parts, " "))
 end
 
 local function check_cvar_changes()
     for _, n in ipairs(WATCHED) do
         local t = cvar_text(n)
         if last_values[n] ~= nil and t ~= last_values[n] then
-            log("cvar changed: " .. n .. " " .. last_values[n] .. " -> " .. t .. " (map " .. map_name() .. ")")
+            log("cvar changed: " .. n .. " " .. last_values[n] .. " -> " .. t .. " (" .. scene_tag() .. ")")
         end
         last_values[n] = t
     end
@@ -179,56 +256,69 @@ end
 
 -- ---------------------------------------------------------------- frame timer
 
+-- Missed frames: longer than 1.5x a refresh budget. "miss" uses the window's median delta as the budget (the
+-- headset paces the game, so the median is the refresh interval; hz~ shows it); miss72 / miss90 use fixed
+-- 72 / 90 Hz budgets.
 local frames = {}
 
 local function frame_summary()
     local n = #frames
     if n == 0 then return end
-    local sorted, sum, over72, over90 = {}, 0, 0, 0
-    local b72, b90 = 1000 / 72, 1000 / 90
-    for i, ms in ipairs(frames) do
-        sorted[i] = ms; sum = sum + ms
-        if ms > b72 then over72 = over72 + 1 end
-        if ms > b90 then over90 = over90 + 1 end
-    end
+    local sorted, sum = {}, 0
+    for i, ms in ipairs(frames) do sorted[i] = ms; sum = sum + ms end
     table.sort(sorted)
     local function pct(p) return sorted[math.max(1, math.min(n, math.ceil(p * n)))] end
-    log(string.format("frames map=%s n=%d mean=%.2fms p50=%.2f p95=%.2f p99=%.2f max=%.2f over72=%d over90=%d",
-        map_name(), n, sum / n, pct(0.50), pct(0.95), pct(0.99), sorted[n], over72, over90))
+    local median = pct(0.50)
+    local lim_med, lim72, lim90 = 1.5 * median, 1.5 * 1000 / 72, 1.5 * 1000 / 90
+    local miss, miss72, miss90 = 0, 0, 0
+    for _, ms in ipairs(frames) do
+        if ms > lim_med then miss = miss + 1 end
+        if ms > lim72 then miss72 = miss72 + 1 end
+        if ms > lim90 then miss90 = miss90 + 1 end
+    end
+    log(string.format("frames %s n=%d mean=%.2fms p50=%.2f p95=%.2f p99=%.2f max=%.2f hz~%.1f miss=%d miss72=%d miss90=%d",
+        scene_tag(), n, sum / n, median, pct(0.95), pct(0.99), sorted[n], 1000 / median, miss, miss72, miss90))
     frames = {}
 end
 
 -- ---------------------------------------------------------------- overrides
 
-local applied_once = {}
+-- originals[name] = { value, text }: the game's value before our first write; restored when the cvar leaves
+-- gfx_set or gfx_override_enable goes to 0.
+local originals = {}
+local missing_logged = {}
 
 local function apply_override(o)
-    local cur = cvar_number(o.name)
-    local v = find_cvar(o.name)
-    if v == nil then
-        if not applied_once[o.name .. "?missing"] then
-            applied_once[o.name .. "?missing"] = true
+    if find_cvar(o.name) == nil then
+        if not missing_logged[o.name] then
+            missing_logged[o.name] = true
             log("override skipped, cvar missing: " .. o.name)
         end
         return
     end
+    local cur = cvar_number(o.name)
     if cur ~= nil and math.abs(cur - o.value) < 1e-4 then return end
-
-    local method = "set"
-    local ok = pcall(function()
-        if o.text:find("%.") then v:set_float(o.value) else v:set_int(math.floor(o.value)) end
-    end)
-    local after = cvar_number(o.name)
-    if not ok or after == nil or math.abs(after - o.value) >= 1e-4 then
-        method = "execute_command"
-        pcall(function() api:execute_command(o.name .. " " .. o.text) end)
-        after = cvar_number(o.name)
-    end
-    local first = not applied_once[o.name]
-    applied_once[o.name] = true
-    log(string.format("%s %s: %s -> %s via %s, now %s (map %s)",
+    local first = originals[o.name] == nil
+    if first then originals[o.name] = { value = cur, text = number_text(cur) } end
+    local method, after = write_cvar(o.name, o.value, o.text)
+    log(string.format("%s %s: %s -> %s via %s, now %s (%s)",
         first and "override applied" or "override RE-applied (value drifted)",
-        o.name, tostring(cur), o.text, method, tostring(after), map_name()))
+        o.name, number_text(cur), o.text, method, number_text(after), scene_tag()))
+end
+
+local function revert_unlisted(active)
+    for name, orig in pairs(originals) do
+        if not active[name] then
+            originals[name] = nil
+            if orig.value == nil then
+                log("override reverted " .. name .. ": original unknown, left at " .. number_text(cvar_number(name)))
+            else
+                local method, after = write_cvar(name, orig.value, orig.text)
+                log(string.format("override reverted %s -> %s via %s, now %s (%s)",
+                    name, orig.text, method, number_text(after), scene_tag()))
+            end
+        end
+    end
 end
 
 -- ---------------------------------------------------------------- tick
@@ -237,6 +327,14 @@ local settings = read_settings()
 local acc_settings, acc_log, acc_reapply = 0.0, 0.0, 0.0
 local started = false
 local last_override_state = nil
+
+local function active_set()
+    local a = {}
+    if settings.gfx_override_enable == 1 then
+        for _, o in ipairs(settings.overrides) do a[o.name] = true end
+    end
+    return a
+end
 
 local function on_tick(delta)
     delta = delta or 0
@@ -253,11 +351,13 @@ local function on_tick(delta)
     if acc_settings >= 1.0 then
         acc_settings = 0.0
         settings = read_settings()
-        local state = settings.gfx_override_enable == 1 and ("on, " .. #settings.overrides .. " gfx_set line(s)") or "off"
+        local state = settings.gfx_override_enable == 1 and ("on, " .. #settings.overrides .. " gfx_set entries") or "off"
         if state ~= last_override_state then
             last_override_state = state
             log("overrides " .. state)
         end
+        local ok, err = pcall(revert_unlisted, active_set())
+        if not ok then log("revert error: " .. tostring(err)) end
         check_cvar_changes()
     end
 
