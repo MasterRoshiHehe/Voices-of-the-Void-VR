@@ -25,6 +25,18 @@ $runTxt = Join-Path $RunDir 'run.txt'
 $uevrLog = Join-Path $RunDir 'uevr_log.txt'
 $run = if (Test-Path $runTxt) { Get-Content $runTxt } else { @() }
 $uevr = if (Test-Path $uevrLog) { Get-Content $uevrLog } else { @() }
+# Only judge this run's UEVR log: the launcher copies the profile's log.txt even when this run never
+# injected, so an older run's log could pass the runtime checks (false PASS seen on the 01:36 run).
+$staleUevr = $null
+try {
+    $day0 = [datetime]::ParseExact((Split-Path $RunDir -Leaf).Substring(0, 19), 'yyyy-MM-dd_HH-mm-ss', $null)
+    $firstUevr = $uevr | Select-String -Pattern '^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)' | Select-Object -First 1
+    if ($firstUevr) {
+        $tU = [datetime]::ParseExact($firstUevr.Matches[0].Groups[1].Value, 'yyyy-MM-dd HH:mm:ss', $null)
+        if ($tU -lt $day0.AddSeconds(-5)) { $staleUevr = "uevr_log.txt starts $tU, before this run ($day0)"; $uevr = @() }
+    }
+} catch { }
+if (-not ($run | Select-String -Pattern 'UEVRInjector started' -Quiet)) { $uevr = @(); if (-not $staleUevr) { $staleUevr = 'no "UEVRInjector started" line: this run never injected' } }
 $finished = [bool]($run | Select-String -Pattern '^\[[^\]]+\] logs in |recovered by')
 if (-not $finished -and (Get-Process -Name 'VotV-Win64-Shipping' -ErrorAction SilentlyContinue)) {
     # Judging a live run gives false FAILs (its logs are copied at the end); write nothing.
@@ -49,7 +61,7 @@ if ($noInject) {
     $reqLine = Find $uevr 'Requested runtime: (\S+)'
     $req = if ($reqLine) { $reqLine.Matches[0].Groups[1].Value } else { $null }
     if (-not $want) { Add-Check UNSURE runtime-request "run.txt has no 'runtime wanted' line (run before 2026-11-27 00:43?); UEVR requested $req" }
-    elseif (-not $req) { Add-Check FAIL runtime-request "UEVR log has no 'Requested runtime' line (not injected, or log not copied)" }
+    elseif (-not $req) { Add-Check FAIL runtime-request "UEVR log has no 'Requested runtime' line ($(if ($staleUevr) { $staleUevr } else { 'not injected, or log not copied' }))" }
     elseif ($req -ne $want) { Add-Check FAIL runtime-request "wanted $want, UEVR requested $req" }
     else { Add-Check PASS runtime-request $req }
 
@@ -65,7 +77,14 @@ if ($noInject) {
         else { Add-Check FAIL runtime-up "OpenVR did not come up$(if ($bad) { ': ' + $bad.Line.Trim() })" }
     } else { Add-Check UNSURE runtime-up 'unknown runtime' }
 
-    # 3. Render API (the launcher pins -d3d11).
+    # 3. Render API (the launcher pins -d3d11; UEVR has no Vulkan support, the game offers Vulkan).
+    $launch = Find $run '\] launch (.*)\| inject'
+    $largs = if ($launch) { $launch.Matches[0].Groups[1].Value } else { '' }
+    $mods = Find $run 'render modules in game: (.*)$'
+    if ($largs -match '(?i)\s-(vulkan|opengl|sm5vulkan)\b') { Add-Check FAIL rhi-args "launched with a non-DX flag: $largs" }
+    elseif ($launch -and $largs -notmatch '(?i)\s-(d3d11|dx11|d3d12|dx12)\b') { Add-Check FAIL rhi-args "no -d3d11/-d3d12 in the launch arguments, so the game's saved RHI (maybe Vulkan) applies: $largs" }
+    # vulkan-1.dll is loaded even on DX11 runs (seen 02:10 run), so it only means Vulkan when nothing DX was hooked.
+    if ($mods -and $mods.Matches[0].Groups[1].Value -match 'vulkan-1' -and -not (Find $uevr 'Hooked DirectX 1[12]')) { Add-Check FAIL vulkan "vulkan-1.dll loaded in the game ($($mods.Matches[0].Groups[1].Value)): Vulkan RHI, which UEVR can't hook" }
     if (Find $uevr 'Hooked DirectX 11') { Add-Check PASS rhi 'DirectX 11 hooked (pinned with -d3d11)' }
     elseif (Find $uevr 'Hooked DirectX 12') { Add-Check UNSURE rhi 'only DirectX 12 hooked' }
     else { Add-Check FAIL rhi 'no DirectX hook in the UEVR log' }
@@ -79,13 +98,36 @@ if ($noInject) {
     }
 }
 
+# Other mod loaders in the game folder (UEVR + UE4SS/shimloader is untested).
+$ld = Find $run 'mod loader files next to the game exe: ([^.]*)'
+$ex = Find $run 'game Win64 folder extras: (.*)$'
+if ($ld) { Add-Check UNSURE mod-loaders "$($ld.Matches[0].Groups[1].Value) present: UEVR with another loader is untested" }
+elseif ($ex) { Add-Check PASS mod-loaders "Win64 extras: $($ex.Matches[0].Groups[1].Value)" }
+
 # 5. Run finished and cleaned up.
 $err = Find $run 'ERROR: (.*)$'
 if ($err) { Add-Check FAIL run-error $err.Matches[0].Groups[1].Value }
-if (Find $run 'game exited') { Add-Check PASS game-exit (Find $run 'game exited').Line.Substring(15) }
+if (Find $run '\] game exited \(code') { Add-Check PASS game-exit (Find $run '\] game exited \(code').Line.Substring(15) }
 elseif (-not $err) { Add-Check FAIL game-exit 'no "game exited" line' }
 if (Find $run 'CRASH folder') { Add-Check FAIL crash ((Find $run 'CRASH folder').Line.Substring(15) + ' (crash ledger in STATUS.md)') }
 else { Add-Check PASS crash 'no new crash folder' }
+# Fail-fast crashes (0xc0000409, e.g. the OpenXR quit crash) write no game crash folder: read the
+# Windows Application log (event 1000) between this run's first and last run.txt lines.
+try {
+    $day = [datetime]::ParseExact((Split-Path $RunDir -Leaf).Substring(0, 10), 'yyyy-MM-dd', $null)
+    $times = @($run | ForEach-Object { if ($_ -match '^\[(\d\d:\d\d:\d\d)') { $day + [timespan]::Parse($Matches[1]) } })
+    if ($times.Count -ge 2) {
+        $t1 = $times[-1]; if ($t1 -lt $times[0]) { $t1 = $t1.AddDays(1) }
+        $ev = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = $times[0]; EndTime = $t1.AddSeconds(30) } -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'VotV-Win64-Shipping' })
+        if ($ev) {
+            $m = $ev[0].Message
+            $code = if ($m -match 'Exception code: (\S+)') { $Matches[1] } else { '?' }
+            $off = if ($m -match 'Fault offset: (\S+)') { $Matches[1] } else { '?' }
+            Add-Check FAIL win-crash "Windows event 1000 at $($ev[0].TimeCreated.ToString('HH:mm:ss')): $code at $off (crash ledger in STATUS.md)"
+        } else { Add-Check PASS win-crash 'no Windows crash event for the game during the run' }
+    }
+} catch { Add-Check UNSURE win-crash "could not read the Application log: $($_.Exception.Message)" }
 if (Find $run '^\[[^\]]+\] logs in ') { Add-Check PASS cleanup 'launcher cleanup finished' }
 elseif (Find $run 'recovered by') { Add-Check UNSURE cleanup ((Find $run 'recovered by').Line.Substring(15)) }
 else { Add-Check FAIL cleanup 'launcher cleanup did not finish (window closed early?); the next run recovers it' }
@@ -122,6 +164,22 @@ $rtKey = if ($want) { $want } elseif (-not $noInject -and (Find $uevr 'Requested
 $rtName = switch ($rtKey) { 'openxr_loader.dll' { 'OpenXR' } 'openvr_api.dll' { 'SteamVR' } default { 'unknown' } }
 $out.Insert(0, "run $(Split-Path $RunDir -Leaf) | runtime $rtName | feature $feature")
 $out.Add("VERDICT $word ($fails failed, $unsure unsure of $($out.Count - 1) checks)")
+# Marks dropped during the run (votv_marks.dll; info only, not a check): listed above the VERDICT line,
+# with <run>\marks.txt and <run>\mark_log_context.txt (UEVR log 7 s before to 3 s after each mark).
+try {
+    . (Join-Path $PSScriptRoot 'marks.ps1')
+    $mday = [datetime]::ParseExact((Split-Path $RunDir -Leaf).Substring(0, 19), 'yyyy-MM-dd_HH-mm-ss', $null)
+    $mlast = (Get-Item $runTxt).LastWriteTime
+    if (-not $finished) { $mlast = Get-Date }
+    $marks = @(Get-MarksBetween $mday $mlast.AddSeconds(5))
+    $mlines = @("INFO   marks            $($marks.Count) new mark(s) in $script:MarksDir$(if ($marks.Count) { '; context: ' + (Join-Path $RunDir 'mark_log_context.txt') })")
+    foreach ($m in $marks) { $mlines += "INFO   mark             $($m.Time.ToString('HH:mm:ss')) $($m.Path) | $($m.Summary)$(if ($m.Note) { ' | note: ' + $m.Note })" }
+    if ($marks.Count) {
+        $mlines | Set-Content -Path (Join-Path $RunDir 'marks.txt') -Encoding utf8
+        Write-MarkLogContext $marks $uevrLog (Join-Path $RunDir 'mark_log_context.txt')
+    }
+    foreach ($l in $mlines) { $out.Insert($out.Count - 1, $l) }
+} catch { $out.Insert($out.Count - 1, "INFO   marks            could not list marks: $($_.Exception.Message)") }
 $out | Set-Content -Path (Join-Path $RunDir 'verdict.txt') -Encoding utf8
 $out | ForEach-Object { Write-Host $_ }
 exit $(if ($fails) { 1 } elseif ($unsure) { 2 } else { 0 })

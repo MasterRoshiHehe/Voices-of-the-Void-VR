@@ -116,6 +116,17 @@ visible to anyone, so no game files, dumps, logs, local paths with usernames or 
     (merge commit) and pushes both. It stops on a conflict instead of guessing; resolve it on
     your branch and merge again.
   - `... git-feature.ps1 status` lists unmerged feature branches and uncommitted files.
+  - **Push rejected (non-fast-forward, origin/dev moved ahead):** run
+    `... git-feature.ps1 sync -Push`. It fetches origin/dev, fast-forwards or makes a merge
+    commit (`STATUS.md` merges by union, so two new log entries both survive), updates only the
+    on-disk files nobody here edited, three-way merges incoming changes into files a thread has
+    edited, and pushes dev. `merge -Push` does this sync first automatically. If it reports
+    CONFLICT, LEFT AS IS or UNION MERGE ... WOULD DUPLICATE, it has changed nothing for those
+    files: stop and tell the repo thread or the user. Union merges suit only adding new log
+    entries; when you change an existing STATUS.md line (the install lock above all), commit and
+    merge it promptly so two threads don't edit the same line on different branches. Never `git pull`, `git rebase`, `git merge origin/dev` or force-push here.
+  - Merge into `dev` only in this folder (with the script), not on GitHub and not from another
+    clone or cloud session; if you work elsewhere, push your feature branch and ask for the merge.
   - Pushing: `-Push`, or `git push -u origin feature/<topic> dev` from either tool. The repo
     pins the GitHub account (`credential.https://github.com.username MasterRoshiHehe`, remote URL
     `https://MasterRoshiHehe@github.com/...`), so no account picker should pop up. Set
