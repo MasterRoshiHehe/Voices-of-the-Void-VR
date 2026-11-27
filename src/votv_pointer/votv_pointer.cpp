@@ -104,6 +104,8 @@ struct Settings {
     bool dot_desktop = true;      // game backbuffer (PC monitor)
     bool dot_framework = true;    // UEVR framework texture (headset, to be confirmed)
     float dot_framework_scale = 1.0f;
+    bool calibrate = false;       // ptr_calibrate=1: trigger records the 4 screen corners, no clicks
+    bool click = true;            // ptr_click=0: never click (pointing only)
 };
 
 class VotvPointer : public Plugin {
@@ -186,7 +188,13 @@ public:
         float trig = API::VR::is_action_active(trigger_action_, src) ? 1.f : 0.f;
         trigger_.on = s_.trigger_on; trigger_.off = s_.trigger_off;
         int edge = trigger_.update(trig);
-        if (edge == 1 && dot_visible_) {
+        if (s_.calibrate) {
+            // Calibration (ptr_calibrate=1): no clicks; trigger records the screen corners in order
+            // top-left, top-right, bottom-right, bottom-left, then the fitted screen is applied and saved.
+            if (edge == 1) record_corner(head, hq, origin, votv::forward_of(aq));
+            return;
+        }
+        if (edge == 1 && dot_visible_ && s_.click) {
             send_mouse(MOUSEEVENTF_MOVE, 1, 0); send_mouse(MOUSEEVENTF_MOVE, -1, 0);
             UINT sent = send_mouse(MOUSEEVENTF_LEFTDOWN); button_down_ = true;
             log("click down at u %.3f v %.3f (target client %ld,%ld): %s", dot_u_.load(), dot_v_.load(),
@@ -289,6 +297,53 @@ private:
         last_pt_ = {-100000, -100000};
     }
 
+    void record_corner(votv::Vec3 head, votv::Quat hq, votv::Vec3 origin, votv::Vec3 dir) {
+        static const char* names[4] = {"top-left", "top-right", "bottom-right", "bottom-left"};
+        auto l = votv::ray_on_plane_local(head, hq, origin, dir, s_.screen.distance);
+        if (!l.ok) { log("calibration: corner %s not recorded (ray doesn't reach the plane in front); try again", names[calib_n_]); return; }
+        calib_[calib_n_] = l;
+        log("calibration: corner %d of 4 (%s) at x %.3f y %.3f m%s", calib_n_ + 1, names[calib_n_], l.x, l.y,
+            calib_n_ < 3 ? (std::string("; next: ") + names[calib_n_ + 1]).c_str() : "");
+        if (++calib_n_ < 4) return;
+        calib_n_ = 0;
+        auto m = votv::fit_screen(calib_, s_.screen.distance);
+        if (m.width < 0.2f || m.width > 10.f || m.aspect < 0.5f || m.aspect > 4.f) {
+            log("calibration: fit rejected (width %.2f m, aspect %.2f); corners again from top-left", m.width, m.aspect);
+            return;
+        }
+        s_.screen = m;
+        s_.calibrate = false;
+        log("calibration: fitted width %.3f m aspect %.3f right %.3f up %.3f at %.2f m; applied, clicking %s",
+            m.width, m.aspect, m.offset_right, m.offset_up, m.distance, s_.click ? "on" : "off");
+        save_screen(m);
+    }
+
+    // Rewrite votv_pointer.txt with the fitted screen and ptr_calibrate=0, keeping other lines.
+    void save_screen(const votv::ScreenModel& m) {
+        auto p = dir_ / "scripts" / "votv_pointer.txt";
+        std::ifstream in(p);
+        std::stringstream out;
+        std::string line;
+        static const char* keys[] = {"ptr_screen_distance_m", "ptr_screen_width_m", "ptr_screen_aspect", "ptr_screen_offset_right_m",
+                                     "ptr_screen_offset_up_m", "ptr_calibrate"};
+        while (std::getline(in, line)) {
+            bool drop = false;
+            for (auto k : keys) if (line.rfind(k, 0) == 0) drop = true;
+            if (!drop) out << line << "\n";
+        }
+        in.close();
+        char buf[512];
+        snprintf(buf, sizeof(buf), "ptr_screen_distance_m=%.3f\nptr_screen_width_m=%.3f\nptr_screen_aspect=%.4f\nptr_screen_offset_right_m=%.3f\nptr_screen_offset_up_m=%.3f\nptr_calibrate=0\n",
+                 m.distance, m.width, m.aspect, m.offset_right, m.offset_up);
+        out << "# calibrated " << buf;
+        std::ofstream o(p, std::ios::trunc);
+        o << out.str();
+        o.close();
+        std::error_code ec;
+        settings_mtime_ = fs::last_write_time(p, ec);  // don't reload our own write as a change
+        log("calibration: saved to %s", p.string().c_str());
+    }
+
     void load_settings(bool first) {
         auto p = dir_ / "scripts" / "votv_pointer.txt";
         std::error_code ec;
@@ -316,14 +371,17 @@ private:
         i("ptr_dot_px", n.dot_px);
         b("ptr_trace_hits", n.trace_hits);
         b("ptr_dot_desktop", n.dot_desktop);
+        b("ptr_calibrate", n.calibrate);
+        b("ptr_click", n.click);
         b("ptr_dot_framework", n.dot_framework);
         f("ptr_dot_framework_scale", n.dot_framework_scale);
         auto ckv = parse_kv(cp);
         auto lh = ckv.find("ctl_left_handed");
         n.left_handed = lh != ckv.end() && (lh->second == "1" || lh->second == "true");
+        if (n.calibrate && !s_.calibrate) { calib_n_ = 0; log("calibration: started; point at the screen's top-left corner and pull the trigger"); }
         s_ = n;
-        log("settings: enabled=%d distance=%.2f width=%.2f aspect=%.3f up=%.2f right=%.2f dot=%d left_handed=%d (%s)",
-            (int)n.enabled, n.screen.distance, n.screen.width, n.screen.aspect, n.screen.offset_up, n.screen.offset_right,
+        log("settings: enabled=%d calibrate=%d click=%d distance=%.2f width=%.2f aspect=%.3f up=%.2f right=%.2f dot=%d left_handed=%d (%s)",
+            (int)n.enabled, (int)n.calibrate, (int)n.click, n.screen.distance, n.screen.width, n.screen.aspect, n.screen.offset_up, n.screen.offset_right,
             n.dot_px, (int)n.left_handed, kv.empty() ? "defaults, no votv_pointer.txt" : "votv_pointer.txt");
     }
 
@@ -355,6 +413,8 @@ private:
     std::atomic<float> dot_u_{0.5f}, dot_v_{0.5f};
     bool warned_renderer_ = false;
     bool logged_framework_ = false;
+    votv::Local2 calib_[4];
+    int calib_n_ = 0;
     ID3D11RenderTargetView* rtv_ = nullptr;
     ID3D11Texture2D* rtv_tex_ = nullptr;
 };

@@ -67,6 +67,30 @@ int main() {
     h = hit_screen(*s, Vec3{0.3f, 1.4f, -0.3f}, {0, 0, -1});
     check(h && near(h->u, 0.5f + 0.3f / 2.f) && h->v > 0.5f, "controller 30 cm right, 20 cm low, pointing ahead");
 
+    // Calibration: synthesize corner pointing for a known screen (1.6 m wide, 0.9 m high, 0.1 m right, 0.2 m low
+    // at 2 m), from a head yawed 40 deg and a controller 30 cm right/40 cm low, then fit it back.
+    {
+        ScreenModel truth; truth.distance = 2.f; truth.width = 1.6f; truth.aspect = 1.6f / 0.9f; truth.offset_right = 0.1f; truth.offset_up = -0.2f;
+        Quat hq = yaw_quat(40);
+        auto ts = place_screen(head, hq, truth);
+        Vec3 ctrl = head + ts->right * 0.3f + Vec3{0, -0.4f, 0};
+        Vec3 corners[4] = {
+            ts->center - ts->right * (ts->width / 2) + ts->up * (ts->height / 2),
+            ts->center + ts->right * (ts->width / 2) + ts->up * (ts->height / 2),
+            ts->center + ts->right * (ts->width / 2) - ts->up * (ts->height / 2),
+            ts->center - ts->right * (ts->width / 2) - ts->up * (ts->height / 2)};
+        Local2 l[4];
+        bool all = true;
+        for (int k = 0; k < 4; ++k) { l[k] = ray_on_plane_local(head, hq, ctrl, normalize(corners[k] - ctrl), 2.f); all = all && l[k].ok; }
+        check(all, "calibration: four corner rays hit the plane");
+        ScreenModel fit = fit_screen(l, 2.f);
+        check(near(fit.width, 1.6f) && near(fit.aspect, 1.6f / 0.9f, 1e-2f) && near(fit.offset_right, 0.1f) && near(fit.offset_up, -0.2f),
+              "calibration: fitted screen matches the true one");
+        auto fs = place_screen(head, hq, fit);
+        auto fh = hit_screen(*fs, ctrl, normalize(ts->center - ctrl));
+        check(fh && near(fh->u, 0.5f) && near(fh->v, 0.5f), "calibration: pointing at the true centre hits (0.5, 0.5)");
+    }
+
     // Hysteresis.
     Hysteresis tr;
     int a = tr.update(0.5f), b = tr.update(0.7f), c = tr.update(0.5f), d = tr.update(0.3f);
