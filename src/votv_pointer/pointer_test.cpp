@@ -1,6 +1,7 @@
 // Offline tests for pointer_math.hpp. Exit code 0 = all pass.
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 #include "pointer_math.hpp"
 
@@ -95,6 +96,56 @@ int main() {
     Hysteresis tr;
     int a = tr.update(0.5f), b = tr.update(0.7f), c = tr.update(0.5f), d = tr.update(0.3f);
     check(a == 0 && b == 1 && c == 0 && d == -1, "trigger hysteresis press/hold/release");
+
+    // Pinned screen (menu-laser thread, 2026-11-27): a screen placed from the activation pose stays put when the
+    // head turns later; a head-yaw model would move the hit.
+    {
+        auto pinned = place_screen(head, Quat{}, m);
+        auto turned = place_screen(head, yaw_quat(40), m);
+        Vec3 o{0.2f, 1.3f, -0.3f};
+        Vec3 dir = normalize(Vec3{-0.05f, 0.1f, -1.f});
+        auto h1 = hit_screen(*pinned, o, dir);
+        check(h1 && h1->on_screen, "pinned screen: controller ray hits");
+        auto h2 = hit_screen(*turned, o, dir);
+        check(!h2 || !near(h2->u, h1->u, 0.05f), "head-yaw model would move the hit (why pinning matters)");
+        auto hc = hit_screen(*pinned, head, {0, 0, -1});
+        auto pc = uv_to_pixel(hc->u, hc->v, 2560, 1440);
+        check(std::labs(pc.x - 1280) <= 1 && std::labs(pc.y - 720) <= 1, "ray to centre -> pixel 1280,720");
+        auto p0 = uv_to_pixel(0, 0, 2560, 1440), p1 = uv_to_pixel(1, 1, 2560, 1440), p2 = uv_to_pixel(1.5f, -1, 2560, 1440);
+        check(p0.x == 0 && p0.y == 0 && p1.x == 2559 && p1.y == 1439, "uv corners -> pixel corners");
+        check(p2.x == 2559 && p2.y == 0, "uv outside 0..1 clamped");
+    }
+    // SendInput absolute coordinates over a 2560-wide monitor (DPI-aware pixels).
+    check(abs_coord(0, 0, 2560) == 0 && abs_coord(2559, 0, 2560) == 65535, "abs coord edges");
+    check(std::labs(abs_coord(1280, 0, 2560) - 32781) <= 1, "abs coord centre");
+    check(abs_coord(-5, 0, 2560) == 0, "abs coord clamped");
+    {
+        Smoother sm;
+        sm.alpha = 0.5f;
+        sm.update(0.2f, 0.2f);
+        check(near(sm.u, 0.2f), "smoother: first sample raw");
+        sm.update(0.4f, 0.2f);
+        check(near(sm.u, 0.3f), "smoother: half way with alpha 0.5");
+        for (int k = 0; k < 40; ++k) sm.update(0.4f, 0.2f);
+        check(near(sm.u, 0.4f), "smoother converges");
+        sm.reset();
+        sm.update(0.9f, 0.9f);
+        check(near(sm.u, 0.9f), "smoother: reset takes next sample raw");
+        Smoother raw;
+        raw.alpha = 1.f;
+        raw.update(0, 0);
+        raw.update(1, 1);
+        check(near(raw.u, 1.f), "smoother alpha 1 = raw");
+    }
+    check(!exceeds_deadzone(100, 100, 100, 100, 1) && exceeds_deadzone(101, 100, 100, 100, 1), "deadzone 1 px");
+    check(!exceeds_deadzone(102, 100, 100, 100, 3) && exceeds_deadzone(100, 97, 100, 100, 3), "deadzone 3 px");
+    {
+        MouseGuard g;
+        check(!g.real_mouse_moved(false, 500, 500, -100000, -100000, 0, 500), "guard: nothing sent yet = no pause");
+        check(!g.real_mouse_moved(true, 101, 99, 100, 100, 10, 500) && !g.paused(10), "guard: rounding (<=2 px) is not the real mouse");
+        check(g.real_mouse_moved(true, 140, 100, 100, 100, 20, 500) && g.paused(400), "guard: real mouse pauses");
+        check(!g.paused(521), "guard: pause ends after 500 ms");
+    }
 
     std::printf("%s (%d failed)\n", fails ? "FAILED" : "ALL PASS", fails);
     return fails ? 1 : 0;

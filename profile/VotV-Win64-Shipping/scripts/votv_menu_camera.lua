@@ -471,6 +471,67 @@ local twod_applied = nil -- last VR_2DScreenMode value this script set (nil = no
 local base = {}          -- per view index: {px,py,pz, rx,ry,rz} from the early callback (camera before HMD)
 local sampled = {}       -- per view index: logged one sample of early vs post for diagnosis
 
+-- Pinned flat menu (menu-laser thread, 2026-11-27): while the 2D screen is on in the main menu, the UEVR
+-- settings that can move the flat screen or the view are forced to world-fixed values and the previous
+-- values are restored when the menu is left. VR_AimMethod above all: the controls thread's aim 2 (right
+-- controller) made the menu follow the hand. votv_controls.dll skips its own aim enforcement while
+-- VR_2DScreenMode is on. Re-checked every frame while pinned (cheap string compare). menu_pin=0 disables.
+local PIN_VALUES = {
+    { "VR_AimMethod", "0" },          -- game aim: nothing tracked drives the game's rotation
+    { "UI_FollowView", "false" },     -- the UI / 2D screen quad does not follow the head
+    { "VR_SnapTurn", "false" },
+    { "VR_LerpCameraYaw", "false" },
+    { "VR_LerpCameraPitch", "false" },
+    { "VR_LerpCameraRoll", "false" },
+    { "VR_RoomscaleMovement", "false" },
+    { "VR_AimModifyPlayerControlRotation", "false" },
+}
+local pin_saved = nil   -- {key = old value} while pinned
+local pin_fix_logs = 0
+
+local function pin_apply()
+    if setting_num("menu_pin", 1) ~= 1 or pin_saved ~= nil then return end
+    pin_saved = {}
+    local parts = {}
+    for _, kv in ipairs(PIN_VALUES) do
+        local old = get_mod(kv[1])
+        pin_saved[kv[1]] = old
+        local ok = set_mod(kv[1], kv[2])
+        parts[#parts + 1] = kv[1] .. " " .. tostring(old) .. "->" .. kv[2] .. (ok and "" or " FAILED")
+    end
+    pcall(function() uevr.params.vr.set_aim_method(0) end)
+    log("menu pin: forced " .. table.concat(parts, ", "))
+end
+
+local function pin_restore()
+    if pin_saved == nil then return end
+    local parts = {}
+    for _, kv in ipairs(PIN_VALUES) do
+        local old = pin_saved[kv[1]]
+        if old ~= nil then
+            local ok = set_mod(kv[1], tostring(old))
+            parts[#parts + 1] = kv[1] .. "=" .. tostring(old) .. (ok and "" or " FAILED")
+        end
+    end
+    local aim = tonumber(tostring(pin_saved["VR_AimMethod"] or ""))
+    if aim ~= nil then pcall(function() uevr.params.vr.set_aim_method(aim) end) end
+    pin_saved = nil
+    log("menu pin: restored " .. table.concat(parts, ", "))
+end
+
+local function pin_enforce()
+    if pin_saved == nil then return end
+    for _, kv in ipairs(PIN_VALUES) do
+        local now = tostring(get_mod(kv[1]))
+        if now ~= kv[2] and not (kv[2] == "0" and now == "0.000000") then
+            set_mod(kv[1], kv[2])
+            if kv[1] == "VR_AimMethod" then pcall(function() uevr.params.vr.set_aim_method(0) end) end
+            pin_fix_logs = pin_fix_logs + 1
+            if pin_fix_logs <= 10 then log("menu pin: " .. kv[1] .. " was " .. now .. ", forced " .. kv[2] .. " again") end
+        end
+    end
+end
+
 local function world_name()
     local engine = try(function() return api:get_engine() end, nil)
     local world = try(function() return engine.GameViewport.World end, nil)
@@ -528,6 +589,7 @@ local function tick()
         local ok = set_mod("VR_2DScreenMode", want2d and "true" or "false")
         log((want2d and "menu: flat 2D screen on" or "stereo 3D (2D screen off)") .. " (" .. (ok and "ok" or "set_mod_value FAILED") .. ")")
         twod_applied = want2d
+        if want2d then pin_apply() else pin_restore() end
     end
     check_dot_host(want2d)
     do
@@ -619,6 +681,8 @@ local ok_start, err_start = pcall(function()
         end
     end)
     uevr.sdk.callbacks.on_pre_engine_tick(function(engine, delta)
+        local okp, errp = pcall(pin_enforce)
+        if not okp then log_error("menu pin", errp) end
         local okm, errm = pcall(move_dot)
         if not okm then log_error("umg dot", errm) end
         local ok, err = pcall(function()

@@ -12,6 +12,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstdlib>
 #include <optional>
 
 namespace votv {
@@ -130,6 +131,60 @@ struct Hysteresis {
         if (down && value <= off) { down = false; return -1; }
         return 0;
     }
+};
+
+// Hit (u,v in 0..1) to client pixel in a w x h client area.
+struct Pixel { long x = 0, y = 0; };
+inline Pixel uv_to_pixel(float u, float v, int w, int h) {
+    Pixel p;
+    if (w <= 0 || h <= 0) return p;
+    u = std::fmin(1.f, std::fmax(0.f, u));
+    v = std::fmin(1.f, std::fmax(0.f, v));
+    p.x = std::lround(u * (w - 1));
+    p.y = std::lround(v * (h - 1));
+    return p;
+}
+
+// Screen pixel to SendInput absolute coordinate (0..65535 across the virtual desktop).
+inline long abs_coord(long p, long origin, long size) {
+    if (size < 2) size = 2;
+    double n = (p - origin) * 65535.0 / (size - 1);
+    if (n < 0) n = 0;
+    if (n > 65535) n = 65535;
+    return std::lround(n);
+}
+
+// Low-pass on the hit point: alpha 1 = raw, small = smoother. First sample after reset is taken as is.
+struct Smoother {
+    float alpha = 0.35f;
+    bool have = false;
+    float u = 0.5f, v = 0.5f;
+    void reset() { have = false; }
+    void update(float nu, float nv) {
+        const float a = std::fmin(1.f, std::fmax(0.01f, alpha));
+        if (!have) { u = nu; v = nv; have = true; return; }
+        u += (nu - u) * a;
+        v += (nv - v) * a;
+    }
+};
+
+// Move only when the target differs by at least `deadzone` px on either axis (min 1).
+inline bool exceeds_deadzone(long x, long y, long lx, long ly, int deadzone) {
+    const long d = std::labs(x - lx) > std::labs(y - ly) ? std::labs(x - lx) : std::labs(y - ly);
+    return d >= (deadzone < 1 ? 1 : deadzone);
+}
+
+// Real-mouse guard: if the OS cursor isn't where the pointer last put it (tolerance 2 px, for absolute-
+// coordinate rounding), the real mouse moved: pause the pointer for pause_ms.
+struct MouseGuard {
+    double pause_until = -1e300;
+    bool real_mouse_moved(bool sent_before, long cx, long cy, long lx, long ly, double t_ms, double pause_ms) {
+        if (!sent_before) return false;
+        if (std::labs(cx - lx) <= 2 && std::labs(cy - ly) <= 2) return false;
+        pause_until = t_ms + pause_ms;
+        return true;
+    }
+    bool paused(double t_ms) const { return t_ms < pause_until; }
 };
 
 }  // namespace votv

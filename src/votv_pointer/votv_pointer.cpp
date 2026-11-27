@@ -74,6 +74,21 @@ UINT send_mouse(DWORD flags, LONG dx = 0, LONG dy = 0, DWORD data = 0) {
     return SendInput(1, &in, sizeof(INPUT));  // events inserted (1) or 0 (blocked, e.g. UIPI)
 }
 
+// Real mouse move to a screen point (physical pixels): SendInput MOUSEEVENTF_MOVE|ABSOLUTE|VIRTUALDESK, so the
+// game sees a genuine mouse move and draws its own cursor (which reaches the headset through UEVR's 2D screen).
+UINT send_abs_move(POINT pt) {
+    const long ax = votv::abs_coord(pt.x, GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN));
+    const long ay = votv::abs_coord(pt.y, GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+    return send_mouse(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, ax, ay);
+}
+
+// Per-monitor DPI awareness for this thread while it maps client <-> screen pixels (2560x1440 at 125%).
+struct DpiScope {
+    DPI_AWARENESS_CONTEXT old = nullptr;
+    DpiScope() { old = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); }
+    ~DpiScope() { if (old) SetThreadDpiAwarenessContext(old); }
+};
+
 // One line of evidence per click (live session 2026-11-27: clicks counted in the trace weren't proven to reach
 // the menu): SendInput result, last error, foreground window owner and title, OS cursor position.
 std::string click_context(UINT sent) {
@@ -109,6 +124,10 @@ struct Settings {
     bool dot_umg = true;          // tell the menu Lua script to draw its green UMG dot at the mouse
     bool calibrate = false;       // ptr_calibrate=1: trigger records the 4 screen corners, no clicks
     bool click = true;            // ptr_click=0: never click (pointing only)
+    bool follow_yaw = false;      // ptr_screen_follow_yaw=1: screen model follows head yaw (old model); 0 = pinned at activation
+    float smooth = 0.35f;         // ptr_smooth: low-pass factor per tick (1 = no smoothing)
+    int deadzone_px = 1;          // ptr_deadzone_px: don't move the cursor for smaller changes
+    double mouse_pause_ms = 500;  // ptr_mouse_pause_ms: pause after the real mouse moved
 };
 
 class VotvPointer : public Plugin {
@@ -143,6 +162,11 @@ public:
             log(active ? "active (2D screen, %s hand)" : "inactive: %s", active ? (s_.left_handed ? "left" : "right") : why.c_str());
             if (active) {
                 auto hp = API::VR::get_pose(API::VR::get_hmd_index());
+                pin_head_ = {hp.position.x, hp.position.y, hp.position.z};
+                pin_rot_ = {hp.rotation.x, hp.rotation.y, hp.rotation.z, hp.rotation.w};
+                smoother_.reset();
+                guard_ = votv::MouseGuard{};
+                log("  screen model %s", s_.follow_yaw ? "follows head yaw (ptr_screen_follow_yaw=1)" : "pinned at this head pose");
                 votv::Quat hq{hp.rotation.x, hp.rotation.y, hp.rotation.z, hp.rotation.w};
                 auto f = votv::forward_of(hq);
                 log("  hmd pos (%.2f %.2f %.2f) forward (%.2f %.2f %.2f)", hp.position.x, hp.position.y, hp.position.z, f.x, f.y, f.z);
@@ -158,7 +182,8 @@ public:
         votv::Quat hq{hp.rotation.x, hp.rotation.y, hp.rotation.z, hp.rotation.w};
         votv::Vec3 origin{ap.position.x, ap.position.y, ap.position.z};
         votv::Quat aq{ap.rotation.x, ap.rotation.y, ap.rotation.z, ap.rotation.w};
-        auto screen = votv::place_screen(head, hq, s_.screen);
+        // Pinned (default): the head pose captured at activation, matching the menu script's world-fixed quad.
+        auto screen = votv::place_screen(s_.follow_yaw ? head : pin_head_, s_.follow_yaw ? hq : pin_rot_, s_.screen);
         std::optional<votv::Hit> hit;
         if (screen) hit = votv::hit_screen(*screen, origin, votv::forward_of(aq));
 
@@ -167,14 +192,27 @@ public:
         GetClientRect(hwnd, &rc);
         const int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
         if (hit && hit->on_screen && cw > 0 && ch > 0) {
-            dot_u_ = hit->u; dot_v_ = hit->v; dot_visible_ = true;
-            POINT pt{(LONG)std::lround(hit->u * (cw - 1)), (LONG)std::lround(hit->v * (ch - 1))};
+            smoother_.alpha = s_.smooth;
+            smoother_.update(hit->u, hit->v);
+            dot_u_ = smoother_.u; dot_v_ = smoother_.v; dot_visible_ = true;
+            DpiScope dpi;
+            RECT prc{};
+            GetClientRect(hwnd, &prc);
+            auto px = votv::uv_to_pixel(smoother_.u, smoother_.v, prc.right - prc.left, prc.bottom - prc.top);
+            POINT pt{px.x, px.y};
             last_client_ = pt;
             ClientToScreen(hwnd, &pt);
-            if (std::abs(pt.x - last_pt_.x) + std::abs(pt.y - last_pt_.y) >= 1) {
-                SetCursorPos(pt.x, pt.y);
-                send_mouse(MOUSEEVENTF_MOVE, 1, 0);   // hover: Slate needs a move event
-                send_mouse(MOUSEEVENTF_MOVE, -1, 0);
+            // Never fight the real mouse: if the OS cursor isn't where we last put it, someone moved the mouse.
+            POINT cur{};
+            GetCursorPos(&cur);
+            const bool sent_before = last_pt_.x > -100000;
+            if (guard_.real_mouse_moved(sent_before, cur.x, cur.y, last_pt_.x, last_pt_.y, t, s_.mouse_pause_ms)) {
+                if (t - mouse_log_t_ > 2000) { mouse_log_t_ = t; log("real mouse moved (cursor %ld,%ld, ours %ld,%ld): pausing %.0f ms", cur.x, cur.y, last_pt_.x, last_pt_.y, s_.mouse_pause_ms); }
+            }
+            if (guard_.paused(t)) {
+                last_pt_ = cur;
+            } else if (votv::exceeds_deadzone(pt.x, pt.y, last_pt_.x, last_pt_.y, s_.deadzone_px)) {
+                send_abs_move(pt);
                 last_pt_ = pt;
             }
             if (s_.trace_hits && t - hit_log_t_ > 2000) {
@@ -202,7 +240,6 @@ public:
             return;
         }
         if (edge == 1 && dot_visible_ && s_.click) {
-            send_mouse(MOUSEEVENTF_MOVE, 1, 0); send_mouse(MOUSEEVENTF_MOVE, -1, 0);
             UINT sent = send_mouse(MOUSEEVENTF_LEFTDOWN); button_down_ = true;
             log("click down at u %.3f v %.3f (target client %ld,%ld): %s", dot_u_.load(), dot_v_.load(),
                 last_client_.x, last_client_.y, click_context(sent).c_str());
@@ -433,6 +470,10 @@ private:
         b("ptr_dot_scene", n.dot_scene);
         b("ptr_click", n.click);
         b("ptr_dot_framework", n.dot_framework);
+        b("ptr_screen_follow_yaw", n.follow_yaw);
+        f("ptr_smooth", n.smooth);
+        i("ptr_deadzone_px", n.deadzone_px);
+        d("ptr_mouse_pause_ms", n.mouse_pause_ms);
         f("ptr_dot_framework_scale", n.dot_framework_scale);
         auto ckv = parse_kv(cp);
         auto lh = ckv.find("ctl_left_handed");
@@ -468,6 +509,11 @@ private:
     bool button_down_ = false;
     POINT last_pt_{-100000, -100000};
     POINT last_client_{0, 0};
+    votv::Vec3 pin_head_{};
+    votv::Quat pin_rot_{};
+    votv::Smoother smoother_;
+    votv::MouseGuard guard_;
+    double mouse_log_t_ = 0;
     std::atomic<bool> dot_visible_{false};
     std::atomic<float> dot_u_{0.5f}, dot_v_{0.5f};
     bool warned_renderer_ = false;

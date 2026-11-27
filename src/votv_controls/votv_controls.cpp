@@ -286,6 +286,11 @@ private:
     // UEVR mod values this plugin owns. Checked every second; re-set and logged when they differ (profile
     // config load, UEVR menu). The settings file is the source of truth.
     void enforce_uevr_values() {
+        // Flat 2D main menu: votv_menu_camera.lua pins the screen (forces aim 0, snap off) and restores the
+        // saved values when the menu is left, so don't fight it here (menu-laser thread, 2026-11-27).
+        bool twod = false;
+        try { twod = API::VR::get_mod_value<bool>("VR_2DScreenMode"); } catch (...) {}
+        if (twod) return;
         const std::string want_aim = std::to_string(aim_method_);
         const bool want_snap = snap_turn_ && !layer_on_;
         const std::string aim_now = API::VR::get_mod_value<std::string>("VR_AimMethod");
