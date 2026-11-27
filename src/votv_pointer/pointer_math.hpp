@@ -83,6 +83,44 @@ inline std::optional<Hit> hit_screen(const Screen& s, Vec3 origin, Vec3 dir) {
     return h;
 }
 
+// Calibration: express a controller ray in the head's yaw frame (x = right, y = up, z = forward, origin at the
+// head) and intersect it with the plane z = distance. The flat screen follows head yaw, so corner hits taken
+// in this frame at different moments are comparable.
+struct Local2 { float x = 0, y = 0; bool ok = false; };
+inline Local2 ray_on_plane_local(Vec3 head_pos, Quat head_rot, Vec3 origin, Vec3 dir, float distance) {
+    Local2 r;
+    Vec3 f = forward_of(head_rot);
+    Vec3 fh{f.x, 0, f.z};
+    if (length(fh) < 1e-3f) return r;
+    fh = normalize(fh);
+    Vec3 up{0, 1, 0};
+    Vec3 right = normalize(cross(fh, up));
+    Vec3 o = origin - head_pos;
+    Vec3 ol{dot(o, right), o.y, dot(o, fh)};
+    Vec3 dl{dot(dir, right), dir.y, dot(dir, fh)};
+    if (dl.z < 1e-4f) return r;
+    float t = (distance - ol.z) / dl.z;
+    if (t <= 0) return r;
+    r.x = ol.x + dl.x * t;
+    r.y = ol.y + dl.y * t;
+    r.ok = true;
+    return r;
+}
+
+// Fit the screen model from the four corner hits (top-left, top-right, bottom-right, bottom-left) on the plane
+// at `distance`. Width/height are averaged over opposite edges, the centre is the mean of the corners.
+inline ScreenModel fit_screen(const Local2 c[4], float distance) {
+    ScreenModel m;
+    m.distance = distance;
+    float w = ((c[1].x - c[0].x) + (c[2].x - c[3].x)) * 0.5f;
+    float h = ((c[0].y - c[3].y) + (c[1].y - c[2].y)) * 0.5f;
+    m.width = std::fabs(w);
+    m.aspect = std::fabs(h) > 1e-4f ? std::fabs(w / h) : 16.f / 9.f;
+    m.offset_right = (c[0].x + c[1].x + c[2].x + c[3].x) * 0.25f;
+    m.offset_up = (c[0].y + c[1].y + c[2].y + c[3].y) * 0.25f;
+    return m;
+}
+
 // Trigger with hysteresis: returns +1 on press, -1 on release, 0 otherwise.
 struct Hysteresis {
     float on = 0.6f, off = 0.4f;
