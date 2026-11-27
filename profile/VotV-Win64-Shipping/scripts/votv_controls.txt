@@ -45,6 +45,6 @@ flash_z=0
 flash_model=1
 flash_model_yaw=180
 flash_intensity=500
-flash_copy_game=0
+flash_copy_game=1
 flash_lens_slot=-1
 flash_model_x=-20
