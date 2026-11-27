@@ -12,6 +12,11 @@
             (created from dev if missing). Other paths keep the branch's previous content.
     merge   Merge feature/<topic> into dev (merge commit; stops on conflicts), then refresh
             the shared index from dev. Files on disk are not touched.
+    sync    Bring origin/dev into local dev (fast-forward or merge commit; STATUS.md merges by
+            union, see .gitattributes). Files on disk that the incoming commits change are
+            updated only where no thread has edited them; where a thread has, its edits are kept
+            and the incoming change is merged in (stops, touching nothing, on a real conflict).
+            merge -Push runs sync first, so a moved origin/dev is not a push failure.
     status  Show feature branches not yet in dev, and on-disk changes not yet in dev.
 
   main is never written here: it moves only when the user says a release is ready.
@@ -19,12 +24,13 @@
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\git-feature.ps1 commit -Branch feature/vr-menu -Message "Menu camera fix" -Paths profile\VotV-Win64-Shipping\scripts\votv_menu_camera.lua,STATUS.md -Push
   powershell -ExecutionPolicy Bypass -File scripts\git-feature.ps1 merge -Branch feature/vr-menu -Push
+  powershell -ExecutionPolicy Bypass -File scripts\git-feature.ps1 sync -Push
   powershell -ExecutionPolicy Bypass -File scripts\git-feature.ps1 status
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet('commit', 'merge', 'status')]
+    [ValidateSet('commit', 'merge', 'sync', 'status')]
     [string]$Action,
     [string]$Branch = '',          # feature/<topic>
     [string]$Message = '',         # commit message (commit); merge uses "Merge <branch> into dev" unless given
@@ -73,6 +79,80 @@ function Push-Branches([string[]]$names) {
     }
 }
 
+function Get-Blob([string]$spec) {
+    $b = & git rev-parse -q --verify "$spec" 2>$null
+    if ($LASTEXITCODE -ne 0) { return $null }
+    return ($b | Select-Object -First 1).Trim()
+}
+function Save-Rev([string]$spec, [string]$dest) {
+    # Byte-exact, with the checkout filters (CRLF) applied; cmd redirection keeps PowerShell from re-encoding.
+    cmd /c "git cat-file --filters `"$spec`" > `"$dest`""
+    if ($LASTEXITCODE -ne 0) { throw "could not read $spec" }
+}
+function Sync-Dev {
+    $env:GCM_INTERACTIVE = 'never'
+    $remoteRef = "refs/remotes/origin/$Base"
+    $fetched = $false
+    foreach ($wait in 0, 2, 4, 8) {
+        if ($wait) { Start-Sleep -Seconds $wait }
+        & git fetch -q origin "+refs/heads/${Base}:$remoteRef"
+        if ($LASTEXITCODE -eq 0) { $fetched = $true; break }
+    }
+    if (-not $fetched) { throw "fetch of origin/$Base failed" }
+    $local = Get-Ref $Base
+    $remote = (Invoke-Git rev-parse $remoteRef | Select-Object -First 1).Trim()
+    & git merge-base --is-ancestor $remote $local
+    if ($LASTEXITCODE -eq 0) { Write-Output "$Base already contains origin/$Base"; return }
+    & git merge-base --is-ancestor $local $remote
+    if ($LASTEXITCODE -eq 0) {
+        $new = $remote; Write-Output "fast-forward $Base to origin/$Base ($remote)"
+    } else {
+        $mt = & git merge-tree --write-tree --name-only $local $remote
+        if ($LASTEXITCODE -ne 0) {
+            Write-Output "CONFLICT bringing origin/$Base into ${Base}:"; $mt | Select-Object -Skip 1 | Write-Output
+            throw "sync stopped, nothing changed: resolve on a feature branch (or ask the repo thread)"
+        }
+        $new = New-Commit (($mt | Select-Object -First 1).Trim()) @($local, $remote) "Merge origin/$Base into $Base"
+        Write-Output "merged origin/$Base into $Base as $new"
+    }
+    $changed = @(& git diff --no-renames --name-only $local $new)
+    $onDev = ((& git symbolic-ref -q --short HEAD) -eq $Base)
+    Invoke-Git update-ref -m "git-feature sync" "refs/heads/$Base" $new $local | Out-Null
+    if (-not $onDev) { return }
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("git-feature-sync-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tmp | Out-Null
+    $kept = @()
+    try {
+        foreach ($path in $changed) {
+            $oldBlob = Get-Blob "${local}:$path"
+            $newBlob = Get-Blob "${new}:$path"
+            $full = Join-Path $repo $path
+            $diskBlob = $null
+            if (Test-Path -LiteralPath $full -PathType Leaf) { $diskBlob = (& git hash-object -- $path | Select-Object -First 1).Trim() }
+            if ($diskBlob -eq $oldBlob) {
+                # nobody edited it here: take the incoming version
+                if ($newBlob) {
+                    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $full) | Out-Null
+                    Save-Rev "${new}:$path" $full
+                } elseif ($diskBlob) { Remove-Item -LiteralPath $full -Force }
+                Write-Output "  updated on disk: $path"
+            } elseif ($diskBlob -eq $newBlob) {
+                # already identical
+            } elseif ($diskBlob -and $oldBlob -and $newBlob) {
+                # a thread edited it: three-way merge its edits with the incoming change
+                $b = Join-Path $tmp 'base'; $t = Join-Path $tmp 'theirs'; $o = Join-Path $tmp 'out'
+                Save-Rev "${local}:$path" $b; Save-Rev "${new}:$path" $t
+                $union = if ((& git check-attr merge -- $path) -match 'merge: union') { '--union' } else { '' }
+                cmd /c "git merge-file -p $union `"$full`" `"$b`" `"$t`" > `"$o`""
+                if ($LASTEXITCODE -eq 0) { Copy-Item -LiteralPath $o -Destination $full -Force; Write-Output "  merged into on-disk edits: $path" }
+                else { $kept += $path; Write-Output "  LEFT AS IS (conflicts with on-disk edits): $path" }
+            } else { $kept += $path; Write-Output "  LEFT AS IS (added/deleted on both sides): $path" }
+        }
+    } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+    Invoke-Git reset -q | Out-Null
+    if ($kept.Count) { Write-Output "WARNING: commit these only after bringing in $Base's version by hand: $($kept -join ', ')" }
+}
+
 $repo = (Invoke-Git rev-parse --show-toplevel | Select-Object -First 1).Trim()
 Set-Location $repo
 if ($Base -in @('main')) { throw "-Base main is not allowed: main moves only on a user-approved release" }
@@ -118,8 +198,14 @@ switch ($Action) {
         if ($Push) { Push-Branches @($Branch) }
     }
 
+    'sync' {
+        Sync-Dev
+        if ($Push) { Push-Branches @($Base) }
+    }
+
     'merge' {
         Assert-FeatureBranch
+        if ($Push) { Sync-Dev }
         $feat = Get-Ref $Branch
         $baseSha = Get-Ref $Base
         if (-not $feat) { throw "branch $Branch not found" }
