@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_r_yaw = -90, hands_r_roll = 90, hands_l_yaw = -90, hands_l_roll = -90, hands_style = 1, hands_scale = 1,
+local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_curl_deg = 70, hands_curl_axis = 1, hands_curl_sign = 1, hands_thumb_axis = 1, hands_thumb_sign = 1, hands_f_thumb = 1, hands_f_index = 2, hands_f_middle = 3, hands_f_ring = 4, hands_r_yaw = -90, hands_r_roll = 90, hands_l_yaw = -90, hands_l_roll = -90, hands_style = 1, hands_scale = 1,
               flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 500, hands_force_mat = 0, flash_copy_game = 1, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
@@ -358,7 +358,7 @@ local function make_mannequin_hand(pawn, side, mesh)
 end
 
 local function calibrate_hand(side) end   -- v1 leftover, nothing to measure in v2
-local function apply_hand_offsets() for side = 0, 1 do if st.hand_bone and st.hand_bone[side] then pose_hand(side) else pose_built(side) end end end
+local function apply_hand_offsets() st.finger_rest = nil; st.curl_force = true; for side = 0, 1 do if st.hand_bone and st.hand_bone[side] then pose_hand(side) else pose_built(side) end end end
 
 -- Run 16:55 (user): "my player body is stuck to my left hand" with only the flashlight attached, so moving the
 -- game's own light_R drags other parts of the player with it. The game's light stays where it is (dark: its
@@ -492,6 +492,74 @@ local function setup(pawn)
 end
 
 
+
+-- Finger curl (user 2026-11-27 18:30): curls arrive from the controls plugin as "votv_fingers" events
+-- ("L t i m r p R t i m r p", 0..1; source: SteamVR skeletal summary on Index/Knuckles, else grip/trigger/face
+-- buttons). The Kel-skin rig has four fingers, finger_N_1..3_<side>; hands_f_thumb/index/middle/ring pick N for
+-- thumb, index, middle and ring+pinky (pinky drives the ring finger's chain too: the max of the two). Each segment
+-- turns hands_curl_deg * curl about hands_curl_axis (1 pitch, 2 yaw, 3 roll) * hands_curl_sign, applied in the
+-- bone's own frame on top of its rest pose (rest captured once after the hand is posed).
+local curls = { [0] = { 0, 0, 0, 0, 0 }, [1] = { 0, 0, 0, 0, 0 } }
+local curl_dirty = false
+pcall(function()
+    uevr.sdk.callbacks.on_lua_event(function(name, data)
+        if name ~= "votv_fingers" then return end
+        local v = {}
+        for n in tostring(data):gmatch("%-?[%d%.]+") do v[#v + 1] = tonumber(n) end
+        if #v >= 10 then
+            for f = 1, 5 do curls[0][f] = v[f]; curls[1][f] = v[5 + f] end
+            curl_dirty = true
+        end
+    end)
+end)
+
+local function finger_chain(side, n)
+    local sfx = side == 1 and "R" or "L"
+    return { string.format("finger_%d_1_%s", n, sfx), string.format("finger_%d_2_%s", n, sfx), string.format("finger_%d_3_%s", n, sfx) }
+end
+
+local function curl_rot(deg, thumb)
+    local ax = thumb and cfg.hands_thumb_axis or cfg.hands_curl_axis
+    local d = deg * (thumb and cfg.hands_thumb_sign or cfg.hands_curl_sign)
+    if ax == 2 then return rot(0, d, 0) elseif ax == 3 then return rot(0, 0, d) end
+    return rot(d, 0, 0)
+end
+
+local function apply_fingers(side)
+    local comp = st.hands[side]
+    if comp == nil or st.hand_bone == nil or st.hand_bone[side] == nil then return end
+    st.finger_rest = st.finger_rest or {}
+    local fmap = { cfg.hands_f_thumb, cfg.hands_f_index, cfg.hands_f_middle, cfg.hands_f_ring }
+    local c = curls[side]
+    local amount = { c[1], c[2], c[3], math.max(c[4], c[5]) }
+    for i = 1, 4 do
+        local chain = finger_chain(side, fmap[i])
+        local key = side .. ":" .. chain[1]
+        local ok, err = pcall(function()
+            local parent = comp:GetParentBone(fname(chain[1]))
+            if st.finger_rest[key] == nil then   -- rest local transforms, once (the hand is already posed)
+                local rest, pt = {}, comp:GetBoneTransformByName(parent, COMP)
+                for k = 1, 3 do
+                    local tk = comp:GetBoneTransformByName(fname(chain[k]), COMP)
+                    rest[k] = kml:MakeRelativeTransform(tk, pt)
+                    pt = tk
+                end
+                st.finger_rest[key] = rest
+            end
+            local rest = st.finger_rest[key]
+            local pt = comp:GetBoneTransformByName(parent, COMP)
+            local deg = cfg.hands_curl_deg * amount[i]
+            for k = 1, 3 do
+                local curlT = kml:MakeTransform(vec(0, 0, 0), curl_rot(deg, i == 1), vec(1, 1, 1))
+                local newc = kml:ComposeTransforms(kml:ComposeTransforms(curlT, rest[k]), pt)
+                comp:SetBoneTransformByName(fname(chain[k]), newc, COMP)
+                pt = newc
+            end
+        end)
+        if not ok and not st.finger_err then st.finger_err = true; log("fingers: " .. tostring(err)) end
+    end
+end
+
 local diag_t = 0
 local function hand_diag(delta)
     diag_t = diag_t + delta
@@ -542,6 +610,7 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
         end
         pcall(sync_light)
         pcall(hand_diag, delta)
+        if curl_dirty or st.curl_force then curl_dirty = false; st.curl_force = false; for side = 0, 1 do apply_fingers(side) end end
         if st.torch ~= nil and st.game_light ~= nil then
             local on = cfg.flash_model ~= 0 and st.game_light:IsVisible()
             if on ~= st.torch_vis then st.torch_vis = on; st.torch:SetVisibility(on, false); log("flashlight model " .. (on and "shown" or "hidden")) end

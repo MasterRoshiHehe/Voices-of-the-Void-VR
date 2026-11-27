@@ -8,7 +8,8 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
 set(UEVR_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/UEVR/1.05/UEVR/include" CACHE PATH "UEVR include dir")
 
 add_library(votv_controls SHARED votv_controls.cpp)
-target_include_directories(votv_controls PRIVATE ${UEVR_INCLUDE})
+set(OPENVR_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/openvr-sdk/v2.15.6/headers" CACHE PATH "OpenVR headers")
+target_include_directories(votv_controls PRIVATE ${UEVR_INCLUDE} ${OPENVR_INCLUDE})
 target_compile_definitions(votv_controls PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(votv_controls PRIVATE user32)
 
