@@ -20,6 +20,7 @@
 #define XR_USE_PLATFORM_WIN32
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
+#include <openxr/openxr_loader_negotiation.h>
 #include <MinHook.h>   // BSD-2, tools/minhook (not in the repo)
 
 namespace xrh {
@@ -29,9 +30,13 @@ inline std::atomic<bool> g_ext_enabled{false};
 inline std::atomic<bool> g_hook_installed{false};
 inline std::string g_log;   // read by the plugin once and logged
 inline HMODULE g_loader = nullptr;
+inline PFN_xrGetInstanceProcAddr g_rt_gipa = nullptr;     // the runtime's own (below the loader and layers)
+inline PFN_xrCreateInstance g_orig_rt_create = nullptr;
 
 inline bool runtime_has(const char* name) {
-    auto enumerate = (PFN_xrEnumerateInstanceExtensionProperties)GetProcAddress(g_loader, "xrEnumerateInstanceExtensionProperties");
+    PFN_xrEnumerateInstanceExtensionProperties enumerate = nullptr;
+    if (g_rt_gipa) g_rt_gipa(XR_NULL_HANDLE, "xrEnumerateInstanceExtensionProperties", (PFN_xrVoidFunction*)&enumerate);
+    if (!enumerate && g_loader) enumerate = (PFN_xrEnumerateInstanceExtensionProperties)GetProcAddress(g_loader, "xrEnumerateInstanceExtensionProperties");
     if (!enumerate) return false;
     uint32_t n = 0;
     if (XR_FAILED(enumerate(nullptr, 0, &n, nullptr)) || n == 0) return false;
@@ -41,7 +46,10 @@ inline bool runtime_has(const char* name) {
     return false;
 }
 
-inline XrResult XRAPI_CALL hooked_create(const XrInstanceCreateInfo* ci, XrInstance* inst) {
+inline XrResult create_with_hands(PFN_xrCreateInstance next, const char* where, const XrInstanceCreateInfo* ci, XrInstance* inst);
+inline XrResult XRAPI_CALL hooked_create(const XrInstanceCreateInfo* ci, XrInstance* inst) { return create_with_hands(g_orig_create, "loader", ci, inst); }
+inline XrResult XRAPI_CALL hooked_rt_create(const XrInstanceCreateInfo* ci, XrInstance* inst) { return create_with_hands(g_orig_rt_create, "runtime", ci, inst); }
+inline XrResult create_with_hands(PFN_xrCreateInstance next, const char* where, const XrInstanceCreateInfo* ci, XrInstance* inst) {
     std::vector<const char*> ext(ci->enabledExtensionNames, ci->enabledExtensionNames + ci->enabledExtensionCount);
     int added = 0;
     for (const char* want : {XR_EXT_HAND_TRACKING_EXTENSION_NAME, XR_EXT_HAND_TRACKING_DATA_SOURCE_EXTENSION_NAME,
@@ -53,13 +61,17 @@ inline XrResult XRAPI_CALL hooked_create(const XrInstanceCreateInfo* ci, XrInsta
     XrInstanceCreateInfo c = *ci;
     c.enabledExtensionCount = (uint32_t)ext.size();
     c.enabledExtensionNames = ext.data();
-    XrResult r = g_orig_create(&c, inst);
+    XrResult r = next(&c, inst);
     if (XR_FAILED(r) && added) {
-        g_log += "xrCreateInstance with hand tracking failed (" + std::to_string((int)r) + "), retried without; ";
-        return g_orig_create(ci, inst);
+        g_log += std::string(where) + " xrCreateInstance with hand tracking failed (" + std::to_string((int)r) + "), retried without; ";
+        return next(ci, inst);
     }
-    g_ext_enabled = XR_SUCCEEDED(r) && added > 0;
-    g_log += "xrCreateInstance: added " + std::to_string(added) + " extension(s), result " + std::to_string((int)r) + "; ";
+    // enabled if this call added them, or they were already in the list (added by the loader-level wrapper)
+    bool present = true;
+    for (const char* want : {XR_EXT_HAND_TRACKING_EXTENSION_NAME, XR_KHR_WIN32_CONVERT_PERFORMANCE_COUNTER_TIME_EXTENSION_NAME}) {
+        bool have = false; for (auto e : ext) if (std::strcmp(e, want) == 0) have = true; present = present && have; }
+    if (XR_SUCCEEDED(r) && present) g_ext_enabled = true;
+    g_log += std::string(where) + " xrCreateInstance: added " + std::to_string(added) + " extension(s), result " + std::to_string((int)r) + "; ";
     return r;
 }
 
@@ -163,8 +175,41 @@ inline void install() {
     if (st != MH_OK && st != MH_ERROR_ALREADY_INITIALIZED) { g_log += "MinHook init failed; "; return; }
     st = MH_CreateHook(target, (void*)&hooked_create, (void**)&g_orig_create);
     if (st == MH_OK) st = MH_EnableHook(target);
-    g_log += std::string("hook on xrCreateInstance: ") + (st == MH_OK ? "enabled" : ("failed " + std::to_string((int)st))) + "; ";
+    g_log += std::string("loader hook: ") + (st == MH_OK ? "enabled" : ("failed " + std::to_string((int)st))) + "; ";
     (void)backend;
+    // Run 19:04: the loader hook was in place 4 s before UEVR created its instance, yet never called (UEVR links
+    // the loader statically). So the runtime itself is hooked too: load the active runtime named in the OpenXR
+    // registry key, negotiate for its xrGetInstanceProcAddr, and hook the xrCreateInstance it hands out.
+    HKEY k; wchar_t json[MAX_PATH]{}; DWORD sz = sizeof(json);
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Khronos\\OpenXR\\1", 0, KEY_READ, &k) == ERROR_SUCCESS) {
+        RegQueryValueExW(k, L"ActiveRuntime", nullptr, nullptr, (LPBYTE)json, &sz); RegCloseKey(k);
+    }
+    std::wstring jp(json);
+    if (jp.empty()) { g_log += "no active OpenXR runtime in the registry; "; return; }
+    std::string text;
+    if (FILE* fp = nullptr; _wfopen_s(&fp, jp.c_str(), L"rb") == 0 && fp) { char b[4096]{}; size_t r = fread(b, 1, sizeof(b) - 1, fp); fclose(fp); text.assign(b, r); }
+    auto q = text.find("\"library_path\"");
+    if (q == std::string::npos) { g_log += "runtime manifest without library_path; "; return; }
+    auto a = text.find('"', text.find(':', q) + 1), b2 = text.find('"', a + 1);
+    std::string lib = text.substr(a + 1, b2 - a - 1);
+    std::string clean; for (size_t i = 0; i < lib.size(); ++i) { if (lib[i] == '\\' && i + 1 < lib.size() && lib[i + 1] == '\\') ++i; clean += lib[i]; }
+    std::wstring dir = jp.substr(0, jp.find_last_of(L"\\/") + 1);
+    std::wstring wl(clean.begin(), clean.end());
+    if (!(wl.size() > 1 && wl[1] == L':')) wl = dir + wl;
+    HMODULE rt = LoadLibraryW(wl.c_str());
+    auto negotiate = rt ? (PFN_xrNegotiateLoaderRuntimeInterface)GetProcAddress(rt, "xrNegotiateLoaderRuntimeInterface") : nullptr;
+    if (!negotiate) { g_log += "runtime DLL or its negotiate function not found; "; return; }
+    XrNegotiateLoaderInfo li{XR_LOADER_INTERFACE_STRUCT_LOADER_INFO, XR_LOADER_INFO_STRUCT_VERSION, sizeof(XrNegotiateLoaderInfo),
+                             1, XR_CURRENT_LOADER_RUNTIME_VERSION, XR_MAKE_VERSION(1, 0, 0), XR_MAKE_VERSION(1, 0x3ff, 0xfff)};
+    XrNegotiateRuntimeRequest rr{XR_LOADER_INTERFACE_STRUCT_RUNTIME_REQUEST, XR_RUNTIME_INFO_STRUCT_VERSION, sizeof(XrNegotiateRuntimeRequest)};
+    if (XR_FAILED(negotiate(&li, &rr)) || !rr.getInstanceProcAddr) { g_log += "runtime negotiation failed; "; return; }
+    g_rt_gipa = rr.getInstanceProcAddr;
+    void* rtc = nullptr;
+    g_rt_gipa(XR_NULL_HANDLE, "xrCreateInstance", (PFN_xrVoidFunction*)&rtc);
+    if (!rtc) { g_log += "runtime has no xrCreateInstance; "; return; }
+    st = MH_CreateHook(rtc, (void*)&hooked_rt_create, (void**)&g_orig_rt_create);
+    if (st == MH_OK) st = MH_EnableHook(rtc);
+    g_log += std::string("runtime hook: ") + (st == MH_OK ? "enabled" : ("failed " + std::to_string((int)st))) + "; ";
 }
 
 // ---- runtime: trackers and per-finger curl ----
@@ -180,7 +225,7 @@ struct Tracker {
         tried = true;
         inst_ = inst;
         if (!g_ext_enabled) { status = "hand tracking extensions not enabled (" + g_log + ")"; return false; }
-        auto gipa = (PFN_xrGetInstanceProcAddr)GetProcAddress(g_loader, "xrGetInstanceProcAddr");
+        auto gipa = g_rt_gipa ? g_rt_gipa : (PFN_xrGetInstanceProcAddr)GetProcAddress(g_loader, "xrGetInstanceProcAddr");
         PFN_xrCreateHandTrackerEXT create = nullptr;
         if (!gipa || XR_FAILED(gipa(inst, "xrCreateHandTrackerEXT", (PFN_xrVoidFunction*)&create)) ||
             XR_FAILED(gipa(inst, "xrLocateHandJointsEXT", (PFN_xrVoidFunction*)&locate)) ||
