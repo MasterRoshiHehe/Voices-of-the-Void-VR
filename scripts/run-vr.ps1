@@ -36,7 +36,7 @@ param(
     [int]$EyeCaptureFirstDelaySeconds = 30,    # after injection, before the first snap
     [int]$EyeCaptureMax = 30,                  # bound on snaps per run
     [switch]$LeaveSteamVR,                     # SteamVR runs: keep SteamVR open afterwards (default: close it if this run started it)
-    [switch]$KeepVdOculusLayer,                # OpenXR runs: keep Virtual Desktop's OculusXR compatibility API layer (default: disabled for the game; quit-crash A/B)
+    [switch]$DisableVdOculusLayer,             # OpenXR runs: turn off Virtual Desktop's OculusXR compatibility API layer for the game (tried for the quit crash 2026-11-27: no effect, so off by default)
     [switch]$ResetProfile,
     [switch]$NoInject,                         # flat run with the same launch path, for A/B
     [switch]$Controls,                         # install the motion-controller plugin (votv_controls.dll) for this run (opt-in while under test)
@@ -167,6 +167,12 @@ try {
     $exeHash  = (Get-FileHash $shipping -Algorithm SHA256).Hash.ToLower()
     $uevrRev  = (Get-Content (Join-Path $UevrDir 'revision.txt') -ErrorAction SilentlyContinue) -join ''
     Write-RunLog "run $stamp | game exe sha256 $exeHash | UEVR dir $UevrDir rev $uevrRev"
+    # UEVR hooks DX11/DX12 only; the game also offers Vulkan (in-game RHI manager / launcher choice). The
+    # command-line RHI flag overrides the saved choice, so always pass one and never pass -vulkan.
+    $rhiFlags = '^-(d3d11|dx11|d3d12|dx12)$'
+    $dropped = @($GameArgs | Where-Object { $_ -match '^-(vulkan|opengl|sm5vulkan)$' })
+    if ($dropped) { $GameArgs = @($GameArgs | Where-Object { $_ -notmatch '^-(vulkan|opengl|sm5vulkan)$' }); Write-RunLog "WARNING: removed $($dropped -join ' ') from the game arguments (UEVR supports DX11/DX12 only)" }
+    if (-not ($GameArgs | Where-Object { $_ -match $rhiFlags })) { $GameArgs = @($GameArgs) + '-d3d11'; Write-RunLog 'no DX flag in the game arguments: added -d3d11' }
     Write-RunLog "launch $exe $($GameArgs -join ' ') | inject=$(-not $NoInject) delay=${InjectDelaySeconds}s"
     $knownHash = '5e690d8f62fe6ce5b9d46815dd05ced45e52a4f110e91f0b6248bbacbe96f6cc'
     if ($exeHash -ne $knownHash) { Write-RunLog "WARNING: game exe differs from the build in RESEARCH.md §0 ($knownHash)" }
@@ -243,12 +249,12 @@ try {
     $ownsMarker = $true
 
     # Virtual Desktop installs an implicit OpenXR API layer ("Compatibility layer for OculusXR Plugin",
-    # openxr-oculus-compatibility.dll, which loads VirtualDesktop.LibOVRRT64_1.dll). UEVR doesn't need it,
-    # and its code sits right under the fail-fast on every OpenXR quit-crash dump (2026-11-27). The
-    # manifest's own disable_environment switch turns it off for this game process only (no system change).
-    if ($wantXr -and -not $NoInject -and -not $KeepVdOculusLayer) {
+    # openxr-oculus-compatibility.dll). UEVR doesn't need it. Turning it off (its manifest's disable_environment,
+    # this game process only) did NOT stop the quit crash (run 2026-11-27_01-40-29): VirtualDesktop.LibOVRRT64_1.dll
+    # is loaded by VD's runtime itself. Opt-in switch for A/B only.
+    if ($wantXr -and -not $NoInject -and $DisableVdOculusLayer) {
         $env:DISABLE_XR_APILAYER_VIRTUALDESKTOP_OCULUS_COMPATIBILITY = '1'
-        Write-RunLog 'VD OculusXR compatibility layer disabled for this run (-KeepVdOculusLayer to keep it)'
+        Write-RunLog 'VD OculusXR compatibility layer disabled for this run (-DisableVdOculusLayer)'
     }
 
     # Launch the game.
@@ -335,6 +341,8 @@ try {
             try {
                 $game.Refresh()
                 $xrMods = @($game.Modules | Where-Object { $_.ModuleName -match 'openxr|LibOVRRT|oculus' } | ForEach-Object ModuleName)
+                $gfx = @($game.Modules | Where-Object { $_.ModuleName -match '^(d3d11|d3d12|vulkan-1)\.dll$' } | ForEach-Object ModuleName)
+                Write-RunLog "render modules in game: $(if ($gfx) { $gfx -join ', ' } else { 'none' })"
                 Write-RunLog "XR modules in game: $(if ($xrMods) { $xrMods -join ', ' } else { 'none' })"
             } catch { Write-RunLog "XR modules in game: unknown ($($_.Exception.Message))" }
         }

@@ -15,7 +15,7 @@ session (or the other agent) picks up the work.
 - Publisher guidance and chosen scope: [dated sources in RESEARCH.md; user decision and unknowns]
 - Launch for testing: `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
-- Who owns the game install right now: nobody (controls thread released it 2026-11-27 01:40 after runs 01:34 and 01:36; plugin removed from the profile, game closed)
+- Who owns the game install right now: graphics session, probe-only baseline run (OpenXR); claimed 2026-11-27 01:43, deadline 02:28. Clear when the run ends.
 
 ## Rendering compatibility
 
@@ -74,6 +74,22 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 | 2026-11-27 00:39:22, 00:47:26, 00:57:09, 01:02:32, 01:07:06, 01:10:38 | same: 0xc0000409 (fail-fast) at 0x7ff82415c28f, module unknown (Application log event 1000) | runs 00:28, 00:43, 00:55, 01:01, 01:05, 01:09 | 5e690d8f, UEVR 1.05, **OpenXR (VDXR) only** | quitting the game, every time | Exit-time crash on UEVR OpenXR shutdown (not Lua: first two runs had no scripts). Gameplay unaffected; saves made before quitting are fine as far as known. Owner: runtime thread. |
 
 ## Log
+
+### 2026-11-27 Claude (runtime thread): VD layer switch did not fix the quit crash; Vulkan guard
+
+- **Quit crash, A/B result:** controls run `logs\2026-11-27_01-40-29` (OpenXR, layer disabled): `openxr-oculus-compatibility.dll` was gone from the game, but `VirtualDesktop.LibOVRRT64_1.dll` still loaded (from VD's runtime `virtualdesktop-openxr.dll` itself) and the same crash happened (win-crash FAIL, 01:43:11, 0xc0000409 at ...c28f). **Hypothesis "VD's OculusXR layer causes it" rejected.** The switch is now opt-in (`-DisableVdOculusLayer`), default back to normal. Still standing: the crash is in VD runtime code (LibOVRRT frames) at process exit, OpenXR only. Web search found no matching UEVR/VD report (UEVR issues #231/#234 are other crashes). Next candidate (needs the user's OK to download): latest UEVR nightly from github.com/praydog/UEVR-nightly as an A/B against 1.05. Side effect to note: each crash leaves a ~50 MB dump in `%LOCALAPPDATA%\CrashDumps` (8 so far, about 430 MB).
+- **Vulkan guard (survey note: the game also offers Vulkan, UEVR can't hook it):** `run-vr.ps1` strips `-vulkan`/`-opengl`/`-sm5vulkan` from the game arguments and adds `-d3d11` if no DX flag is given (the command-line flag overrides the game's saved RHI choice). OpenXR runs log `render modules in game: ...`. `check-run.ps1` adds `rhi-args` (FAIL on a non-DX flag or none) and `vulkan` (FAIL if `vulkan-1.dll` is in the game); tested on a fake run folder (both FAIL as expected, folder deleted). The shipping build writes no game log (`Saved\Logs` empty), so the RHI comes from the UEVR hook line and the module list.
+- `check-run.ps1` false PASS fixed (from the controls thread): ignores a uevr_log.txt that predates the run, or any run with no "UEVRInjector started"; `run-vr.ps1` copies log.txt only if written during the run.
+### 2026-11-27 Claude (controls thread): first user run with the controls plugin (01:40, OpenXR), buttons reach the game
+
+- Run `logs/2026-11-27_01-40-29` (`Test-Controls.bat`, OpenXR via VD; the user played about 1.5 min of gameplay in `untitled_1`). The plugin unblocked once the controllers were live and sent 112 key presses, none failed. **Game-side results from the probe (pawn `input_*` flags):** grip -> E: `input_use` true 18 of 18 presses; trigger -> LMB: `input_fire` true 8 times for 7 sends (**so injected LMB does reach gameplay**, unlike the warning screen); X -> Ctrl: `input_crouch` 5 of 5; B -> R: `input_drop` 3 of 3; left stick -> WASD: `moving` true each time; Y -> Tab and left trigger -> Alt were sent (no probe flag for those); picked up a suitcase (`grabbing_actor=prop_container_suitcase_C`, 01:42:25) and dropped it. Left-grip layer engaged twice (no layer actions used). Flashlight and the menu button weren't pressed. No `SENDINPUT FAILED`, one `blocked: focus` (at quit).
+- Not shown by logs: whether the right-hand aim (`VR_AimMethod=2`) felt right, walking direction (hand vs head), snap turn, and the wheel on the right stick (8 notches). Asking the user.
+- For the runtime thread: verdict `FAIL win-crash: Windows event 1000 at 01:43:11: 0xc0000409 at 0x00007ff82415c28f`; run.txt `VD OculusXR compatibility layer disabled for this run (-KeepVdOculusLayer to keep it)`; `XR modules in game: openxr_loader.dll, virtualdesktop-openxr.dll, VirtualDesktop.LibOVRRT64_1.dll`. So **the LibOVRRT DLL still loaded with the layer disabled, and the quit crash still happened.**
+
+### 2026-11-27 Claude (menu thread): plan from the community-mod intel (no changes yet; controls run holds the lock)
+
+- Intel (docs/COMMUNITY-MODS.md, Multivoid, MIT): `ui_menu_C` is both the main and the pause menu (`isPause` bool); in the menu level it is held in `mainGamemode_C.pause_mainMenu`; members `button_start`, `txt_version`, `switcher_widgets` (sub-screens `ui_settings_C`, `ui_saveSlots_C`). Multivoid uses `ui_menu_C::Tick` as the "menu visible" signal. Cursor/focus goes through WidgetBlueprintLibrary `SetInputMode_UIOnlyEx` / `SetInputMode_GameAndUIEx` / `SetInputMode_GameOnly` and the PlayerController's `bShowMouseCursor`.
+- Plan once the lock is free, one change per test: (1) narrow the probe to `ui_menu_C`'s own WidgetTree children, skipping everything under `switcher_widgets` (the ~7,900 settings/save-slot widgets), and log each direct child's class, visibility and brush resource; (2) hide the flat-picture child via `menu_hide_widgets`; (3) cursor: log `bShowMouseCursor` and the input mode in the menu, then decide between a software cursor on UEVR's UI panel and the controls thread's laser pointer (theirs to own). Using `isPause` keeps the pause menu out of the menu-only changes unless wanted.
 
 ### 2026-11-27 Claude (controls thread): first in-game runs of the controls plugin (01:34, 01:36), blocked at the content warning
 

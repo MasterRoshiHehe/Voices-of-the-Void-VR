@@ -77,7 +77,13 @@ if ($noInject) {
         else { Add-Check FAIL runtime-up "OpenVR did not come up$(if ($bad) { ': ' + $bad.Line.Trim() })" }
     } else { Add-Check UNSURE runtime-up 'unknown runtime' }
 
-    # 3. Render API (the launcher pins -d3d11).
+    # 3. Render API (the launcher pins -d3d11; UEVR has no Vulkan support, the game offers Vulkan).
+    $launch = Find $run '\] launch (.*)\| inject'
+    $largs = if ($launch) { $launch.Matches[0].Groups[1].Value } else { '' }
+    $mods = Find $run 'render modules in game: (.*)$'
+    if ($largs -match '(?i)\s-(vulkan|opengl|sm5vulkan)\b') { Add-Check FAIL rhi-args "launched with a non-DX flag: $largs" }
+    elseif ($launch -and $largs -notmatch '(?i)\s-(d3d11|dx11|d3d12|dx12)\b') { Add-Check FAIL rhi-args "no -d3d11/-d3d12 in the launch arguments, so the game's saved RHI (maybe Vulkan) applies: $largs" }
+    if ($mods -and $mods.Matches[0].Groups[1].Value -match 'vulkan-1') { Add-Check FAIL vulkan "vulkan-1.dll loaded in the game ($($mods.Matches[0].Groups[1].Value)): Vulkan RHI, which UEVR can't hook" }
     if (Find $uevr 'Hooked DirectX 11') { Add-Check PASS rhi 'DirectX 11 hooked (pinned with -d3d11)' }
     elseif (Find $uevr 'Hooked DirectX 12') { Add-Check UNSURE rhi 'only DirectX 12 hooked' }
     else { Add-Check FAIL rhi 'no DirectX hook in the UEVR log' }
