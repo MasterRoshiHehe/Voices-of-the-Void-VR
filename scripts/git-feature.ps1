@@ -10,14 +10,8 @@
 
     commit  Snapshot the listed paths, as they are on disk, onto feature/<topic>
             (created from dev if missing). Other paths keep the branch's previous content.
-    merge   Merge feature/<topic> into dev (merge commit; stops on conflicts). Takes the branch
-            from origin if it was pushed from elsewhere. Files the merge brings in are written
-            to disk only where nobody here has edited them (same rules as sync).
-    sync    Bring origin/dev into local dev (fast-forward or merge commit; STATUS.md merges by
-            union, see .gitattributes). Files on disk that the incoming commits change are
-            updated only where no thread has edited them; where a thread has, its edits are kept
-            and the incoming change is merged in (stops, touching nothing, on a real conflict).
-            merge -Push runs sync first, so a moved origin/dev is not a push failure.
+    merge   Merge feature/<topic> into dev (merge commit; stops on conflicts), then refresh
+            the shared index from dev. Files on disk are not touched.
     status  Show feature branches not yet in dev, and on-disk changes not yet in dev.
 
   main is never written here: it moves only when the user says a release is ready.
@@ -25,13 +19,12 @@
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\git-feature.ps1 commit -Branch feature/vr-menu -Message "Menu camera fix" -Paths profile\VotV-Win64-Shipping\scripts\votv_menu_camera.lua,STATUS.md -Push
   powershell -ExecutionPolicy Bypass -File scripts\git-feature.ps1 merge -Branch feature/vr-menu -Push
-  powershell -ExecutionPolicy Bypass -File scripts\git-feature.ps1 sync -Push
   powershell -ExecutionPolicy Bypass -File scripts\git-feature.ps1 status
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [ValidateSet('commit', 'merge', 'sync', 'status')]
+    [ValidateSet('commit', 'merge', 'status')]
     [string]$Action,
     [string]$Branch = '',          # feature/<topic>
     [string]$Message = '',         # commit message (commit); merge uses "Merge <branch> into dev" unless given
@@ -80,137 +73,6 @@ function Push-Branches([string[]]$names) {
     }
 }
 
-function Get-Blob([string]$spec) {
-    $b = & git rev-parse -q --verify "$spec" 2>$null
-    if ($LASTEXITCODE -ne 0) { return $null }
-    return ($b | Select-Object -First 1).Trim()
-}
-function Save-Rev([string]$spec, [string]$dest) {
-    # Byte-exact, with the checkout filters (CRLF) applied; cmd redirection keeps PowerShell from re-encoding.
-    cmd /c "git cat-file --filters `"$spec`" > `"$dest`""
-    if ($LASTEXITCODE -ne 0) { throw "could not read $spec" }
-}
-function Read-TextLf([string]$file) {
-    return ([IO.File]::ReadAllText($file, (New-Object Text.UTF8Encoding($false)))).Replace("`r`n", "`n")
-}
-function Write-TextFile([string]$file, [string]$text) {
-    [IO.File]::WriteAllText($file, $text, (New-Object Text.UTF8Encoding($false)))
-}
-function Get-RevTextLf([string]$spec, [string]$tmpFile) {
-    # raw blob (stored with LF), so every side of a merge has the same line endings
-    cmd /c "git cat-file blob `"$spec`" > `"$tmpFile`""
-    if ($LASTEXITCODE -ne 0) { throw "could not read $spec" }
-    return Read-TextLf $tmpFile
-}
-function Test-UnionResult([string]$result, [string]$ours, [string]$theirs) {
-    # A union merge must never repeat content: no long line may appear more often than in either
-    # side, and STATUS.md's single-line fields (the install lock) must stay single.
-    $problems = @()
-    $count = { param($t) $h = @{}; foreach ($l in $t.Split("`n")) { if ($l.Length -gt 40) { $h[$l] = 1 + [int]$h[$l] } }; $h }
-    $r = & $count $result; $o = & $count $ours; $t = & $count $theirs
-    foreach ($k in $r.Keys) { if ($r[$k] -gt [Math]::Max([int]$o[$k], [int]$t[$k])) { $problems += "repeated: $($k.Substring(0, [Math]::Min(70, $k.Length)))" } }
-    $locks = @($result.Split("`n") | Where-Object { $_ -like '- Who owns the game install*' })
-    if ($locks.Count -gt 1) { $problems += "install lock line appears $($locks.Count) times (both sides changed it)" }
-    return $problems
-}
-function Assert-UnionTree([string]$tree, [string]$ours, [string]$theirs) {
-    # check union-merged files in a merge-tree result before it becomes a commit
-    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("git-feature-u-" + [guid]::NewGuid().ToString('N'))
-    try {
-        foreach ($path in @(& git diff --no-renames --name-only $ours $tree)) {
-            if (-not ((& git check-attr merge -- $path) -match 'merge: union')) { continue }
-            if (-not (Get-Blob "${ours}:$path") -or -not (Get-Blob "${theirs}:$path") -or -not (Get-Blob "${tree}:$path")) { continue }
-            $bad = @(Test-UnionResult (Get-RevTextLf "${tree}:$path" $tmp) (Get-RevTextLf "${ours}:$path" $tmp) (Get-RevTextLf "${theirs}:$path" $tmp))
-            if ($bad.Count) {
-                Write-Output "UNION MERGE OF $path WOULD DUPLICATE CONTENT:"; $bad | Select-Object -First 8 | ForEach-Object { Write-Output "  $_" }
-                throw "merge stopped, nothing changed: both sides edited the same lines of $path; bring one side's edit into the other branch by hand, then retry"
-            }
-        }
-    } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
-}
-function Sync-Dev {
-    $env:GCM_INTERACTIVE = 'never'
-    $remoteRef = "refs/remotes/origin/$Base"
-    $fetched = $false
-    foreach ($wait in 0, 2, 4, 8) {
-        if ($wait) { Start-Sleep -Seconds $wait }
-        & git fetch -q origin "+refs/heads/${Base}:$remoteRef"
-        if ($LASTEXITCODE -eq 0) { $fetched = $true; break }
-    }
-    if (-not $fetched) { throw "fetch of origin/$Base failed" }
-    $local = Get-Ref $Base
-    $remote = (Invoke-Git rev-parse $remoteRef | Select-Object -First 1).Trim()
-    & git merge-base --is-ancestor $remote $local
-    if ($LASTEXITCODE -eq 0) { Write-Output "$Base already contains origin/$Base"; return }
-    & git merge-base --is-ancestor $local $remote
-    if ($LASTEXITCODE -eq 0) {
-        $new = $remote; Write-Output "fast-forward $Base to origin/$Base ($remote)"
-    } else {
-        $mt = & git merge-tree --write-tree --name-only $local $remote
-        if ($LASTEXITCODE -ne 0) {
-            Write-Output "CONFLICT bringing origin/$Base into ${Base}:"; $mt | Select-Object -Skip 1 | Write-Output
-            throw "sync stopped, nothing changed: resolve on a feature branch (or ask the repo thread)"
-        }
-        $syncTree = ($mt | Select-Object -First 1).Trim()
-        Assert-UnionTree $syncTree $local $remote
-        $new = New-Commit $syncTree @($local, $remote) "Merge origin/$Base into $Base"
-        Write-Output "merged origin/$Base into $Base as $new"
-    }
-    Invoke-Git update-ref -m "git-feature sync" "refs/heads/$Base" $new $local | Out-Null
-    Update-Disk $local $new
-}
-function Update-Disk([string]$local, [string]$new) {
-    # dev moved from $local to $new: bring the shared folder's files along without losing on-disk edits
-    if ((& git symbolic-ref -q --short HEAD) -ne $Base) { return }
-    $changed = @(& git diff --no-renames --name-only $local $new)
-    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("git-feature-sync-" + [guid]::NewGuid().ToString('N'))
-    New-Item -ItemType Directory -Path $tmp | Out-Null
-    $kept = @()
-    try {
-        foreach ($path in $changed) {
-            $oldBlob = Get-Blob "${local}:$path"
-            $newBlob = Get-Blob "${new}:$path"
-            $full = Join-Path $repo $path
-            $diskBlob = $null
-            if (Test-Path -LiteralPath $full -PathType Leaf) { $diskBlob = (& git hash-object -- $path | Select-Object -First 1).Trim() }
-            if ($diskBlob -eq $oldBlob) {
-                # nobody edited it here: take the incoming version
-                if ($newBlob) {
-                    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $full) | Out-Null
-                    Save-Rev "${new}:$path" $full
-                } elseif ($diskBlob) { Remove-Item -LiteralPath $full -Force }
-                Write-Output "  updated on disk: $path"
-            } elseif ($diskBlob -eq $newBlob) {
-                # already identical
-            } elseif ($diskBlob -and $oldBlob -and $newBlob) {
-                # a thread edited it: three-way merge its edits with the incoming change
-                # All three sides go in with LF endings: mixed CRLF/LF makes every line differ, and a
-                # union merge then keeps the whole file twice (STATUS.md, 2026-11-27).
-                $x = Join-Path $tmp 'x'; $m = Join-Path $tmp 'mine'; $b = Join-Path $tmp 'base'; $t = Join-Path $tmp 'theirs'; $o = Join-Path $tmp 'out'
-                $diskRaw = [IO.File]::ReadAllText($full, (New-Object Text.UTF8Encoding($false)))
-                $mine = $diskRaw.Replace("`r`n", "`n"); $baseT = Get-RevTextLf "${local}:$path" $x; $theirsT = Get-RevTextLf "${new}:$path" $x
-                Write-TextFile $m $mine; Write-TextFile $b $baseT; Write-TextFile $t $theirsT
-                $isUnion = ((& git check-attr merge -- $path) -match 'merge: union')
-                $union = if ($isUnion) { '--union' } else { '' }
-                cmd /c "git merge-file -p $union `"$m`" `"$b`" `"$t`" > `"$o`""
-                $ok = ($LASTEXITCODE -eq 0)
-                $merged = if ($ok) { Read-TextLf $o } else { '' }
-                $bad = if ($ok -and $isUnion) { @(Test-UnionResult $merged $mine $theirsT) } else { @() }
-                $now = [IO.File]::ReadAllText($full, (New-Object Text.UTF8Encoding($false)))
-                if (-not $ok) { $kept += $path; Write-Output "  LEFT AS IS (conflicts with on-disk edits): $path" }
-                elseif ($bad.Count) { $kept += $path; Write-Output "  LEFT AS IS (union would duplicate content: $($bad[0])): $path" }
-                elseif ($now -ne $diskRaw) { $kept += $path; Write-Output "  LEFT AS IS (a thread edited it during the merge): $path" }
-                else {
-                    if ($diskRaw.Contains("`r`n")) { $merged = $merged.Replace("`n", "`r`n") }
-                    Write-TextFile $full $merged; Write-Output "  merged into on-disk edits: $path"
-                }
-            } else { $kept += $path; Write-Output "  LEFT AS IS (added/deleted on both sides): $path" }
-        }
-    } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
-    Invoke-Git reset -q | Out-Null
-    if ($kept.Count) { Write-Output "WARNING: commit these only after bringing in $Base's version by hand: $($kept -join ', ')" }
-}
-
 $repo = (Invoke-Git rev-parse --show-toplevel | Select-Object -First 1).Trim()
 Set-Location $repo
 if ($Base -in @('main')) { throw "-Base main is not allowed: main moves only on a user-approved release" }
@@ -256,31 +118,8 @@ switch ($Action) {
         if ($Push) { Push-Branches @($Branch) }
     }
 
-    'sync' {
-        Sync-Dev
-        if ($Push) { Push-Branches @($Base) }
-    }
-
     'merge' {
         Assert-FeatureBranch
-        if ($Push) { Sync-Dev }
-        # pick up the branch from origin if it was pushed from elsewhere (or is ahead there)
-        $env:GCM_INTERACTIVE = 'never'
-        cmd /c "git fetch -q origin +refs/heads/${Branch}:refs/remotes/origin/$Branch 2>nul"   # cmd: a native stderr line under -ErrorAction Stop would abort PowerShell 5.1
-        $remoteFeat = Get-Blob "refs/remotes/origin/$Branch"
-        $feat = Get-Ref $Branch
-        if ($remoteFeat) {
-            if (-not $feat) {
-                Invoke-Git update-ref "refs/heads/$Branch" $remoteFeat '0000000000000000000000000000000000000000' | Out-Null
-                Write-Output "took $Branch from origin ($remoteFeat)"
-            } else {
-                & git merge-base --is-ancestor $feat $remoteFeat
-                if ($LASTEXITCODE -eq 0 -and $feat -ne $remoteFeat) {
-                    Invoke-Git update-ref "refs/heads/$Branch" $remoteFeat $feat | Out-Null
-                    Write-Output "fast-forwarded $Branch to origin ($remoteFeat)"
-                }
-            }
-        }
         $feat = Get-Ref $Branch
         $baseSha = Get-Ref $Base
         if (-not $feat) { throw "branch $Branch not found" }
@@ -294,11 +133,11 @@ switch ($Action) {
             throw "merge stopped: commit a resolution on $Branch (bring in $Base's version of those files, fix, commit), then merge again"
         }
         $tree = ($mt | Select-Object -First 1).Trim()
-        Assert-UnionTree $tree $baseSha $feat
         if (-not $Message) { $Message = "Merge $Branch into $Base" }
         $commit = New-Commit $tree @($baseSha, $feat) $Message
         Invoke-Git update-ref -m "git-feature merge $Branch" "refs/heads/$Base" $commit $baseSha | Out-Null
-        Update-Disk $baseSha $commit   # files from a branch made elsewhere appear on disk; local edits are kept
+        $head = & git symbolic-ref -q --short HEAD
+        if ($head -eq $Base) { Invoke-Git reset -q | Out-Null }   # index follows dev; files on disk are not touched
         Write-Output "merged $Branch into $Base as $commit"
         if ($Push) { Push-Branches @($Branch, $Base) }
     }

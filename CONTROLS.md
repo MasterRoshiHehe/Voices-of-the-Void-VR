@@ -79,7 +79,7 @@ so every context (on foot, ATV) behaves as on the keyboard and a rebind in the g
 | Right grip | E (`use`; ATV `atv_use`) | grab / pick up / interact; hold = carry |
 | A | Space (`Jump`; ATV brake) | |
 | B | R (`Drop`) | press and hold keep their different meanings (place vs to inventory) |
-| Right stick left/right | snap turn 45° (existing UEVR setting) | one turn per push |
+| Right stick left/right | smooth turn, up to 120°/s (`ctl_turn_speed`) | user hates snap turn (2026-11-27); snap stays an option (`ctl_snap_turn=1`) |
 | Right stick up/down | mouse wheel (`scrollUp/Down`) | whatever the wheel does in game |
 | Right stick click | F (`flashlight`; ATV lights) | |
 | Left stick | W/A/S/D (move; ATV drive) | digital (the game has no analog walk) |

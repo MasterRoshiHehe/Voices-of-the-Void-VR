@@ -5,4 +5,3 @@
 *.png binary
 *.dll binary
 *.exe binary
-STATUS.md merge=union
