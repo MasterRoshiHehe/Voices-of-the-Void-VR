@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 0, hands_x = 0, hands_y = 0, hands_z = 0,
+local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0,
               flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180 }
 local active = false
 
@@ -75,48 +75,58 @@ local function add_comp(pawn, class_path)
     return pawn:AddComponentByClass(cls, true, identity(), false)
 end
 
--- One arms copy per hand; side 1 = right (hide the left arm), 0 = left (hide the right arm).
+-- Hands, v2 (user 16:01: hands wanted; v1 copies dragged the torso along). One PoseableMeshComponent per
+-- controller with the game's arms mesh, posed once in component space: every bone except this side's hand is
+-- shrunk to 1% and parked at the component origin (so the torso, the other arm and this arm collapse inside the
+-- hand), and the hand bone is put back at full size at the origin, which UEVR drives to the controller grip.
+-- Live: hands_x/y/z (cm) move the hand, hands_pitch/yaw/roll (deg) turn it, hands_show hides it.
+local BONES = { "root", "body", "shoulder_L", "upperarm_L", "forearm_L", "hand_L", "IK_hand_L", "IK_hand_L_end",
+                "armPole_L", "armPole_L_end", "weapon_L", "weapon_L_end", "shoulder_R", "upperarm_R", "forearm_R",
+                "hand_R", "IK_hand_R", "IK_hand_R_end", "armPole_R", "armPole_R_end", "weapon_R", "weapon_R_end" }
+local COMP = 1   -- EBoneSpaces::ComponentSpace
+
+local function pose_hand(side)
+    local comp = st.hands[side]
+    if comp == nil then return end
+    local keep = side == 1 and "hand_R" or "hand_L"
+    local tiny, zero = vec(0.01, 0.01, 0.01), vec(0, 0, 0)
+    for _, b in ipairs(BONES) do   -- parents come first in this list, so children are set after them
+        if b ~= keep then
+            pcall(function()
+                local n = fname(b)
+                comp:SetBoneLocationByName(n, zero, COMP)
+                comp:SetBoneScaleByName(n, tiny, COMP)
+            end)
+        end
+    end
+    local ok, err = pcall(function()
+        local n = fname(keep)
+        local mx = side == 1 and 1 or -1
+        comp:SetBoneLocationByName(n, vec(cfg.hands_x, mx * cfg.hands_y, cfg.hands_z), COMP)
+        comp:SetBoneRotationByName(n, rot(cfg.hands_pitch, mx * cfg.hands_yaw, mx * cfg.hands_roll), COMP)
+        comp:SetBoneScaleByName(n, vec(1, 1, 1), COMP)
+    end)
+    if not ok then log("hands: posing failed: " .. tostring(err)) end
+end
+
 local function make_hand(pawn, side)
     local mesh = nil
     pcall(function() mesh = pawn.arms.SkeletalMesh end)
     if mesh == nil then log("hands: pawn.arms has no SkeletalMesh"); return end
-    local comp = add_comp(pawn, "Class /Script/Engine.SkeletalMeshComponent")
-    if comp == nil then log("hands: AddComponentByClass(SkeletalMeshComponent) failed"); return end
+    local comp = add_comp(pawn, "Class /Script/Engine.PoseableMeshComponent")
+    if comp == nil then log("hands: AddComponentByClass(PoseableMeshComponent) failed"); return end
     comp:SetSkeletalMesh(mesh, true)
     pcall(function() comp:SetCollisionEnabled(0) end)
     pcall(function() comp:SetCastShadow(false) end)
-    pcall(function() comp:HideBoneByName(fname(side == 1 and "shoulder_L" or "shoulder_R"), 0) end)
     st.hands[side] = comp
     st.hand_states[side] = mc_state(comp, side)
-    st.calibrated[side] = false
-    log("hands: " .. (side == 1 and "right" or "left") .. " arm copy attached to the controller")
+    st.calibrated[side] = true
+    pose_hand(side)
+    log("hands: " .. (side == 1 and "right" or "left") .. " hand (posed copy of the game's arms) on the controller")
 end
 
--- After UEVR has placed the copy once: measure where the hand bone sits in the component's own space and shift
--- the copy so the bone lands on the controller (plus the live extra offset).
-local function calibrate_hand(side)
-    local comp, s = st.hands[side], st.hand_states[side]
-    if comp == nil or s == nil then return end
-    local ok, err = pcall(function()
-        local bone = comp:GetSocketLocation(fname(side == 1 and "hand_R" or "hand_L"))
-        local local_pos = kml:InverseTransformLocation(comp:K2_GetComponentToWorld(), bone)
-        st.hand_base[side] = { X = -local_pos.X, Y = -local_pos.Y, Z = -local_pos.Z }
-        st.calibrated[side] = true
-        log(string.format("hands: %s hand bone at (%.1f, %.1f, %.1f) cm in the mesh; offset applied",
-            side == 1 and "right" or "left", local_pos.X, local_pos.Y, local_pos.Z))
-    end)
-    if not ok then st.calibrated[side] = true; log("hands: calibrate failed (using no offset): " .. tostring(err)) end
-end
-
-local function apply_hand_offsets()
-    for side = 0, 1 do
-        local s, b = st.hand_states[side], st.hand_base[side]
-        if s ~= nil and b ~= nil then
-            local mx = side == 1 and 1 or -1   -- extra Y offset mirrored for the left hand
-            set_offset(s, b.X + cfg.hands_x, b.Y + mx * cfg.hands_y, b.Z + cfg.hands_z)
-        end
-    end
-end
+local function calibrate_hand(side) end   -- v1 leftover, nothing to measure in v2
+local function apply_hand_offsets() for side = 0, 1 do pose_hand(side) end end
 
 -- Run 16:55 (user): "my player body is stuck to my left hand" with only the flashlight attached, so moving the
 -- game's own light_R drags other parts of the player with it. The game's light stays where it is (dark: its
