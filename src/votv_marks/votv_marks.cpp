@@ -171,7 +171,8 @@ VrPixels read_texture_dx11(ID3D11DeviceContext* ctx, ID3D11Texture2D* tex) {
     const bool rgba = d.Format == DXGI_FORMAT_R8G8B8A8_UNORM || d.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || d.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS;
     const bool bgra = d.Format == DXGI_FORMAT_B8G8R8A8_UNORM || d.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || d.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS;
     const bool rgb10 = d.Format == DXGI_FORMAT_R10G10B10A2_UNORM || d.Format == DXGI_FORMAT_R10G10B10A2_TYPELESS;
-    if (!rgba && !bgra && !rgb10) { out.err = "unsupported format " + std::to_string((int)d.Format); return out; }
+    const bool half4 = d.Format == DXGI_FORMAT_R16G16B16A16_FLOAT || d.Format == DXGI_FORMAT_R16G16B16A16_TYPELESS;
+    if (!rgba && !bgra && !rgb10 && !half4) { out.err = "unsupported format " + std::to_string((int)d.Format); return out; }
     ID3D11Device* dev = nullptr; tex->GetDevice(&dev);
     D3D11_TEXTURE2D_DESC sd = d; sd.Usage = D3D11_USAGE_STAGING; sd.BindFlags = 0; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     sd.MiscFlags = 0; sd.MipLevels = 1; sd.ArraySize = 1; sd.SampleDesc.Count = 1; sd.SampleDesc.Quality = 0;
@@ -181,6 +182,21 @@ VrPixels read_texture_dx11(ID3D11DeviceContext* ctx, ID3D11Texture2D* tex) {
     D3D11_MAPPED_SUBRESOURCE m{};
     if (SUCCEEDED(ctx->Map(st, 0, D3D11_MAP_READ, 0, &m))) {
         out.bgra.resize((size_t)out.w * out.h);
+        auto h2f = [](uint16_t h) -> float {
+            uint32_t e = (h >> 10) & 31, f = h & 1023; float v;
+            if (e == 0) v = f / 1024.f / 16384.f; else if (e == 31) v = 65504.f; else v = (1.f + f / 1024.f) * std::ldexp(1.f, (int)e - 15);
+            return (h & 0x8000) ? -v : v;
+        };
+        auto to8 = [](float v) -> uint32_t { v = std::clamp(v, 0.f, 1.f); return (uint32_t)(std::pow(v, 1.f / 2.2f) * 255.f + 0.5f); };
+        if (half4) {
+            for (int y = 0; y < out.h; ++y) {
+                const uint16_t* row = (const uint16_t*)((const uint8_t*)m.pData + (size_t)y * m.RowPitch);
+                for (int x = 0; x < out.w; ++x) {
+                    uint32_t r = to8(h2f(row[x * 4])), g = to8(h2f(row[x * 4 + 1])), b = to8(h2f(row[x * 4 + 2]));
+                    out.bgra[(size_t)y * out.w + x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+                }
+            }
+        } else
         for (int y = 0; y < out.h; ++y) {
             const uint32_t* row = (const uint32_t*)((const uint8_t*)m.pData + (size_t)y * m.RowPitch);
             for (int x = 0; x < out.w; ++x) {
@@ -377,11 +393,19 @@ public:
         if (!vr_want_.exchange(false)) return;
         fs::path folder;
         { std::scoped_lock lk(vr_mtx_); folder = vr_folder_; }
-        VrPixels px = read_texture_dx11(context, texture);
+        // UEVR's scene render target holds both eye images (the framework texture is only the desktop backbuffer,
+        // black on OpenXR/VD: run 18:05 gave 2560x1440 all black). Fall back to the framework texture.
+        ID3D11Texture2D* scene = nullptr;
+        if (auto* rt = API::StereoHook::get_scene_render_target(); rt != nullptr) scene = (ID3D11Texture2D*)rt->get_native_resource();
+        VrPixels px = read_texture_dx11(context, scene != nullptr ? scene : texture);
+        if (scene == nullptr) px.err += px.err.empty() ? "scene render target unavailable, used framework texture" : "; scene render target unavailable";
         const int q = jpeg_quality_;
         std::thread([folder, q, px = std::move(px)]() {
             std::string err;
             bool ok = save_pixels_jpeg(px, folder / "vr.jpg", q, err);
+            double sum = 0; size_t n = 0, nonblack = 0;
+            for (size_t i = 0; i < px.bgra.size(); i += 97) { uint32_t v = px.bgra[i]; double l = ((v >> 16) & 255) * 0.3 + ((v >> 8) & 255) * 0.59 + (v & 255) * 0.11; sum += l; ++n; if (l > 8) ++nonblack; }
+            if (n) err += " | mean luma " + std::to_string((int)(sum / n)) + ", non-black " + std::to_string((int)(100.0 * nonblack / n)) + "%";
             API::get()->log_info("[votv-mark] Mark: VR frame %s %s (%dx%d, format %d)%s", folder.string().c_str(), ok ? "ok" : "FAILED",
                                  px.w, px.h, px.format, err.empty() ? "" : (" " + err).c_str());
         }).detach();
