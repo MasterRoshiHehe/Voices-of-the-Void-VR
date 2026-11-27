@@ -2,9 +2,11 @@
 --
 -- The main menu (world /Game/menu.menu, view target CameraActor_1, fov 110) looks cross-eyed in VR. Eye
 -- captures (2026-11-27 01:13) show why: the menu widget (ui_menu_C) draws a flat picture of the scene, shown
--- on UEVR's UI panel in front of the same scene rendered in 3D. This script logs the menu's camera and
--- widgets (to find that picture), and has an optional, default-off view lock (HMD rotation/position removed
--- in the post stereo-view-offset callback, per-eye offset along the camera's right axis). Gameplay untouched.
+-- on UEVR's UI panel in front of the same scene rendered in 3D. User decision (00:55): show the main menu as
+-- a flat 2D screen (UEVR 2D screen mode while the menu world is active; menu_2d, default on), stereo 3D
+-- everywhere else. Also logs the menu's camera, widgets and cursor state. Parked, default off: a view lock
+-- (HMD removed in the post stereo-view-offset callback) and hiding ui_menu_C's BackgroundBlur children.
+--   menu_2d (1)                1 = flat 2D main menu, 0 = stereo menu
 --
 -- Live settings: scripts\votv\settings.lua (a Lua table, re-read every second; missing = default):
 --   menu_lock_view (0)         1 = lock the menu view to the face; 0 = normal head tracking
@@ -283,7 +285,7 @@ end
 local last_world, last_target = nil, nil
 local in_menu = false
 local lock_on, ipd_cm, eye_sign = true, 6.4, 1
-local cleaned_2d = false
+local twod_applied = nil -- last VR_2DScreenMode value this script set (nil = not yet)
 local base = {}          -- per view index: {px,py,pz, rx,ry,rz} from the early callback (camera before HMD)
 local sampled = {}       -- per view index: logged one sample of early vs post for diagnosis
 
@@ -295,12 +297,6 @@ end
 
 local function tick()
     load_settings()
-    if not cleaned_2d then
-        -- An earlier test build turned on UEVR's 2D screen mode and UEVR saved it; make sure it's off.
-        cleaned_2d = true
-        local ok = set_mod("VR_2DScreenMode", "false")
-        log("2D screen mode forced off (" .. (ok and "ok" or "set_mod_value FAILED") .. ")")
-    end
     lock_on = setting_num("menu_lock_view", 0) == 1   -- default OFF
     ipd_cm = setting_num("menu_ipd_cm", 6.4)
     eye_sign = setting_num("menu_eye_sign", 1) >= 0 and 1 or -1
@@ -331,6 +327,17 @@ local function tick()
                      or "left menu: normal head tracking")
         if not menu_now then restore_menu_widgets() end
         hide_tries = 0
+    end
+
+    -- Flat 2D main menu (user decision 2026-11-27 00:55): UEVR's 2D screen mode while the menu world is
+    -- active, stereo everywhere else (the pause menu lives in the gameplay world, so it stays 3D). Applied
+    -- only when the wanted value changes, also on the first tick (an earlier run may have left UEVR's saved
+    -- config in 2D), so a manual UEVR 2D toggle in gameplay isn't fought every second. menu_2d=0 disables it.
+    local want2d = menu_now and setting_num("menu_2d", 1) == 1
+    if want2d ~= twod_applied then
+        local ok = set_mod("VR_2DScreenMode", want2d and "true" or "false")
+        log((want2d and "menu: flat 2D screen on" or "stereo 3D (2D screen off)") .. " (" .. (ok and "ok" or "set_mod_value FAILED") .. ")")
+        twod_applied = want2d
     end
 
     -- Hide the configured menu children until every name is found; give up after 10 scans (logged), since
