@@ -15,7 +15,7 @@ session (or the other agent) picks up the work.
 - Publisher guidance and chosen scope: [dated sources in RESEARCH.md; user decision and unknowns]
 - Launch for testing: `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
-- Who owns the game install right now: nobody (controls thread released it 2026-11-27 01:40 after runs 01:34 and 01:36; plugin removed from the profile, game closed)
+- Who owns the game install right now: nobody (Test-Controls run 01:40-01:43 ended; plugin removed by the launcher)
 
 ## Rendering compatibility
 
@@ -74,6 +74,17 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 | 2026-11-27 00:39:22, 00:47:26, 00:57:09, 01:02:32, 01:07:06, 01:10:38 | same: 0xc0000409 (fail-fast) at 0x7ff82415c28f, module unknown (Application log event 1000) | runs 00:28, 00:43, 00:55, 01:01, 01:05, 01:09 | 5e690d8f, UEVR 1.05, **OpenXR (VDXR) only** | quitting the game, every time | Exit-time crash on UEVR OpenXR shutdown (not Lua: first two runs had no scripts). Gameplay unaffected; saves made before quitting are fine as far as known. Owner: runtime thread. |
 
 ## Log
+
+### 2026-11-27 Claude (controls thread): first user run with the controls plugin (01:40, OpenXR), buttons reach the game
+
+- Run `logs/2026-11-27_01-40-29` (`Test-Controls.bat`, OpenXR via VD; the user played about 1.5 min of gameplay in `untitled_1`). The plugin unblocked once the controllers were live and sent 112 key presses, none failed. **Game-side results from the probe (pawn `input_*` flags):** grip -> E: `input_use` true 18 of 18 presses; trigger -> LMB: `input_fire` true 8 times for 7 sends (**so injected LMB does reach gameplay**, unlike the warning screen); X -> Ctrl: `input_crouch` 5 of 5; B -> R: `input_drop` 3 of 3; left stick -> WASD: `moving` true each time; Y -> Tab and left trigger -> Alt were sent (no probe flag for those); picked up a suitcase (`grabbing_actor=prop_container_suitcase_C`, 01:42:25) and dropped it. Left-grip layer engaged twice (no layer actions used). Flashlight and the menu button weren't pressed. No `SENDINPUT FAILED`, one `blocked: focus` (at quit).
+- Not shown by logs: whether the right-hand aim (`VR_AimMethod=2`) felt right, walking direction (hand vs head), snap turn, and the wheel on the right stick (8 notches). Asking the user.
+- For the runtime thread: verdict `FAIL win-crash: Windows event 1000 at 01:43:11: 0xc0000409 at 0x00007ff82415c28f`; run.txt `VD OculusXR compatibility layer disabled for this run (-KeepVdOculusLayer to keep it)`; `XR modules in game: openxr_loader.dll, virtualdesktop-openxr.dll, VirtualDesktop.LibOVRRT64_1.dll`. So **the LibOVRRT DLL still loaded with the layer disabled, and the quit crash still happened.**
+
+### 2026-11-27 Claude (menu thread): plan from the community-mod intel (no changes yet; controls run holds the lock)
+
+- Intel (docs/COMMUNITY-MODS.md, Multivoid, MIT): `ui_menu_C` is both the main and the pause menu (`isPause` bool); in the menu level it is held in `mainGamemode_C.pause_mainMenu`; members `button_start`, `txt_version`, `switcher_widgets` (sub-screens `ui_settings_C`, `ui_saveSlots_C`). Multivoid uses `ui_menu_C::Tick` as the "menu visible" signal. Cursor/focus goes through WidgetBlueprintLibrary `SetInputMode_UIOnlyEx` / `SetInputMode_GameAndUIEx` / `SetInputMode_GameOnly` and the PlayerController's `bShowMouseCursor`.
+- Plan once the lock is free, one change per test: (1) narrow the probe to `ui_menu_C`'s own WidgetTree children, skipping everything under `switcher_widgets` (the ~7,900 settings/save-slot widgets), and log each direct child's class, visibility and brush resource; (2) hide the flat-picture child via `menu_hide_widgets`; (3) cursor: log `bShowMouseCursor` and the input mode in the menu, then decide between a software cursor on UEVR's UI panel and the controls thread's laser pointer (theirs to own). Using `isPause` keeps the pause menu out of the menu-only changes unless wanted.
 
 ### 2026-11-27 Claude (controls thread): first in-game runs of the controls plugin (01:34, 01:36), blocked at the content warning
 
