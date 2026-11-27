@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_curl_deg = 80, hands_mcp = 85, hands_pip = 100, hands_dip_ratio = 0.67, hands_relax = 0.15, hands_splay = 6, hands_thumb_opp = 20, hands_curl_axis = 2, hands_curl_sign = 1, hands_thumb_axis = 2, hands_relax_deg = 10, hands_seg1 = 0.8, hands_seg2 = 1.0, hands_seg3 = 0.67, hands_thumb_sign = 1, hands_f_thumb = 1, hands_f_index = 2, hands_f_middle = 3, hands_f_ring = 4, hands_r_yaw = -90, hands_r_roll = 90, hands_l_yaw = -90, hands_l_roll = -90, hands_style = 1, hands_scale = 1,
+local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_curl_deg = 80, hands_mcp = 85, hands_pip = 100, hands_dip_ratio = 0.67, hands_relax = 0.15, hands_splay = 0, hands_thumb_opp = 0, hands_curl_axis = 0, hands_curl_sign = 1, hands_thumb_axis = 0, hands_relax_deg = 10, hands_seg1 = 0.8, hands_seg2 = 1.0, hands_seg3 = 0.67, hands_thumb_sign = 1, hands_f_thumb = 1, hands_f_index = 2, hands_f_middle = 3, hands_f_ring = 4, hands_r_yaw = -90, hands_r_roll = 90, hands_l_yaw = -90, hands_l_roll = -90, hands_style = 1, hands_scale = 1,
               flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 500, hands_force_mat = 0, flash_copy_game = 1, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
@@ -518,9 +518,47 @@ local function finger_chain(side, n)
     return { string.format("finger_%d_1_%s", n, sfx), string.format("finger_%d_2_%s", n, sfx), string.format("finger_%d_3_%s", n, sfx) }
 end
 
-local function curl_rot(deg, thumb)
+-- Curl axes from the rig itself (2026-11-27, after marks 18:45 looked "run over by a bulldozer"): computed offline
+-- from kerfurOmegaV1_Skeleton's reference pose (scratch script geo.py): for every finger joint, axis =
+-- cross(bone direction, palm normal), sign chosen so +angle moves the finger toward the palm, expressed in the
+-- bone's own frame. Every joint comes out at about local +X for both hands. Offline stick-figure renders of open,
+-- fist, point and thumb-rest with these axes looked like a hand. hands_curl_axis=0 uses this table (default);
+-- 1/2/3 still force pitch/yaw/roll for experiments.
+local CURL_AXES = {
+    ["finger_1_1_L"] = { 0.986, -0.0, -0.1669 },
+    ["finger_1_1_R"] = { 0.986, -0.0, 0.1669 },
+    ["finger_1_2_L"] = { 0.9993, 0.0, 0.0386 },
+    ["finger_1_2_R"] = { 0.9993, -0.0, -0.0386 },
+    ["finger_1_3_L"] = { 0.9991, 0.0164, 0.0397 },
+    ["finger_1_3_R"] = { 0.9991, -0.0164, -0.0397 },
+    ["finger_2_1_L"] = { 0.9998, 0.0, -0.0198 },
+    ["finger_2_1_R"] = { 0.9998, -0.0, 0.0198 },
+    ["finger_2_2_L"] = { 1.0, -0.0, -0.0009 },
+    ["finger_2_2_R"] = { 1.0, 0.0, 0.0009 },
+    ["finger_2_3_L"] = { 1.0, 0.0028, 0.0012 },
+    ["finger_2_3_R"] = { 1.0, -0.0028, -0.0012 },
+    ["finger_3_1_L"] = { 0.9999, -0.0, -0.0171 },
+    ["finger_3_1_R"] = { 0.9999, 0.0, 0.0171 },
+    ["finger_3_2_L"] = { 1.0, 0.0, -0.0004 },
+    ["finger_3_2_R"] = { 1.0, -0.0, 0.0004 },
+    ["finger_3_3_L"] = { 1.0, -0.0, 0.0014 },
+    ["finger_3_3_R"] = { 1.0, 0.0, -0.0014 },
+    ["finger_4_1_L"] = { 0.9999, 0.0, -0.0167 },
+    ["finger_4_1_R"] = { 0.9999, -0.0, 0.0167 },
+    ["finger_4_2_L"] = { 1.0, 0.0, 0.0039 },
+    ["finger_4_2_R"] = { 1.0, -0.0, -0.0039 },
+    ["finger_4_3_L"] = { 1.0, -0.0088, 0.0003 },
+    ["finger_4_3_R"] = { 1.0, 0.0088, -0.0003 },
+}
+
+local function curl_rot(deg, thumb, bone)
     local ax = thumb and cfg.hands_thumb_axis or cfg.hands_curl_axis
-    local d = deg * (thumb and cfg.hands_thumb_sign or cfg.hands_curl_sign)
+    local sign = thumb and cfg.hands_thumb_sign or cfg.hands_curl_sign
+    if ax == 0 and CURL_AXES[bone] then
+        local a = CURL_AXES[bone]
+        return kml:RotatorFromAxisAndAngle(vec(a[1], a[2], a[3]), deg * sign)
+    end
+    local d = deg * sign
     if ax == 2 then return rot(0, d, 0) elseif ax == 3 then return rot(0, 0, d) end
     return rot(d, 0, 0)
 end
@@ -566,7 +604,7 @@ local function apply_fingers(side)
             local seg = { mcp, pip, dip }
             local spread = ({ 0, 1, 0, -1 })[i] * cfg.hands_splay * c * (side == 1 and 1 or -1)
             for k = 1, 3 do
-                local r = curl_rot(seg[k], thumb)
+                local r = curl_rot(seg[k], thumb, chain[k])
                 if k == 1 and spread ~= 0 then r = kml:ComposeRotators(r, rot(spread, 0, 0)) end
                 if k == 1 and thumb and cfg.hands_thumb_opp ~= 0 then r = kml:ComposeRotators(r, rot(cfg.hands_thumb_opp * e, 0, 0)) end
                 local curlT = kml:MakeTransform(vec(0, 0, 0), r, vec(1, 1, 1))
