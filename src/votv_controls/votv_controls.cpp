@@ -418,8 +418,9 @@ private:
     enum { P_OPEN, P_TRIGGER, P_GRIP, P_FIST, P_THUMB_REST, P_THUMB_PRESS, P_COUNT };
     static constexpr const char* preset_names_[P_COUNT]{"open", "trigger", "grip", "fist", "thumb_rest", "thumb_press"};
     float presets_[P_COUNT][5]{
-        {0.10f, 0.10f, 0.10f, 0.10f, 0.10f}, {0.10f, 0.85f, 0.10f, 0.10f, 0.10f}, {0.20f, 0.10f, 0.90f, 0.90f, 0.90f},
-        {0.60f, 0.90f, 0.90f, 0.90f, 0.90f}, {0.50f, 0.f, 0.f, 0.f, 0.f}, {0.90f, 0.f, 0.f, 0.f, 0.f}};
+        // rest = fingers resting on a held controller (marks 20:09: a flat open hand looked like a claw)
+        {0.40f, 0.30f, 0.45f, 0.50f, 0.50f}, {0.40f, 0.90f, 0.45f, 0.50f, 0.50f}, {0.45f, 0.30f, 0.95f, 0.95f, 0.95f},
+        {0.70f, 0.90f, 0.95f, 0.95f, 0.95f}, {0.55f, 0.f, 0.f, 0.f, 0.f}, {0.85f, 0.f, 0.f, 0.f, 0.f}};
     std::streamoff log_pos_{-1};
     double presets_t_{0};
     std::string game_poses_;
