@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_curl_deg = 80, hands_curl_axis = 2, hands_curl_sign = 1, hands_thumb_axis = 2, hands_relax_deg = 10, hands_seg1 = 0.8, hands_seg2 = 1.0, hands_seg3 = 0.67, hands_thumb_sign = 1, hands_f_thumb = 1, hands_f_index = 2, hands_f_middle = 3, hands_f_ring = 4, hands_r_yaw = -90, hands_r_roll = 90, hands_l_yaw = -90, hands_l_roll = -90, hands_style = 1, hands_scale = 1,
+local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_curl_deg = 80, hands_mcp = 85, hands_pip = 100, hands_dip_ratio = 0.67, hands_relax = 0.15, hands_splay = 6, hands_thumb_opp = 20, hands_curl_axis = 2, hands_curl_sign = 1, hands_thumb_axis = 2, hands_relax_deg = 10, hands_seg1 = 0.8, hands_seg2 = 1.0, hands_seg3 = 0.67, hands_thumb_sign = 1, hands_f_thumb = 1, hands_f_index = 2, hands_f_middle = 3, hands_f_ring = 4, hands_r_yaw = -90, hands_r_roll = 90, hands_l_yaw = -90, hands_l_roll = -90, hands_style = 1, hands_scale = 1,
               flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 500, hands_force_mat = 0, flash_copy_game = 1, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
@@ -551,10 +551,25 @@ local function apply_fingers(side)
             -- Marks 18:41: with the pitch axis the fingers fanned sideways in the palm plane, so that axis is the
             -- palm normal; the curl axis is yaw (hands_curl_axis=2). Joint ratios: knuckle 0.8, middle 1.0,
             -- fingertip 0.67 of the middle joint; a relaxed open hand keeps hands_relax_deg of curl.
-            local ratio = { cfg.hands_seg1, cfg.hands_seg2, cfg.hands_seg3 }
-            local deg = cfg.hands_relax_deg + (cfg.hands_curl_deg - cfg.hands_relax_deg) * amount[i]
+            -- Anatomical curl (research doc "VR hand animation research", 2026-11-27): knuckle (MCP) up to
+            -- hands_mcp deg, middle joint (PIP) up to hands_pip, fingertip (DIP) = hands_dip_ratio * PIP and lagging
+            -- (curl^1.5); the open hand stays relaxed (hands_relax of the way closed); ring+pinky close a little
+            -- earlier and further; fingers converge toward the middle finger as they close (hands_splay deg about
+            -- the palm-normal axis, which is pitch on this rig); the thumb also opposes toward the palm
+            -- (hands_thumb_opp deg on its first joint).
+            local thumb = i == 1
+            local c = amount[i]
+            if i == 4 then c = math.min(1, (c ^ 0.85) * 1.1) end
+            local e = cfg.hands_relax + (1 - cfg.hands_relax) * c                 -- effective closing 0..1
+            local mcp, pip = cfg.hands_mcp * e, cfg.hands_pip * e
+            local dip = cfg.hands_dip_ratio * cfg.hands_pip * (cfg.hands_relax + (1 - cfg.hands_relax) * (c ^ 1.5))
+            local seg = { mcp, pip, dip }
+            local spread = ({ 0, 1, 0, -1 })[i] * cfg.hands_splay * c * (side == 1 and 1 or -1)
             for k = 1, 3 do
-                local curlT = kml:MakeTransform(vec(0, 0, 0), curl_rot(deg * ratio[k], i == 1), vec(1, 1, 1))
+                local r = curl_rot(seg[k], thumb)
+                if k == 1 and spread ~= 0 then r = kml:ComposeRotators(r, rot(spread, 0, 0)) end
+                if k == 1 and thumb and cfg.hands_thumb_opp ~= 0 then r = kml:ComposeRotators(r, rot(cfg.hands_thumb_opp * e, 0, 0)) end
+                local curlT = kml:MakeTransform(vec(0, 0, 0), r, vec(1, 1, 1))
                 local newc = kml:ComposeTransforms(kml:ComposeTransforms(curlT, rest[k]), pt)
                 comp:SetBoneTransformByName(fname(chain[k]), newc, COMP)
                 pt = newc

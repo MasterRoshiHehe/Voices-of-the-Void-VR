@@ -192,7 +192,10 @@ private:
     double turn_t_{0};
     float turn_speed_{120}, turn_deadzone_{0.2f}, yaw_scale_{2.5f};
     int turn_method_{0};
-    float finger_speed_{14};
+    float finger_speed_{14}, thumb_rest_{0.6f};
+    UEVR_ActionHandle touch_h_[2][3]{};
+    const char* touch_right_[3]{"/actions/default/in/AButtonTouchRight", "/actions/default/in/BButtonTouchRight", "/actions/default/in/ThumbrestTouchRight"};
+    const char* touch_left_[3]{"/actions/default/in/AButtonTouchLeft", "/actions/default/in/BButtonTouchLeft", "/actions/default/in/ThumbrestTouchLeft"};
     int rstick_x_state_{0};
     votv::Mapper mapper_;
     bool seen_pad_{false}, zero_pad_{true}, snap_turn_{true};
@@ -275,6 +278,7 @@ private:
         yaw_scale_ = std::max(0.01f, num("ctl_yaw_scale", yaw_scale_));
         turn_method_ = (int)num("ctl_turn_method", 0);
         finger_speed_ = num("ctl_finger_speed", 14);
+        thumb_rest_ = num("ctl_thumb_rest", 0.6f);
         int aim = (int)num("ctl_aim_method", 1);   // UEVR enum: 0 game, 1 head, 2 right controller, 3 left; hand ray: votv_hand_aim.lua
         if (s.left_handed && aim == 2) aim = 3;
         if (aim >= 0 && aim <= 5) aim_method_ = aim;
@@ -337,13 +341,23 @@ private:
                 const bool grip = (p.buttons & (right ? votv::PAD_RSHOULDER : votv::PAD_LSHOULDER)) != 0;
                 const bool thumb = (p.buttons & (right ? (votv::PAD_A | votv::PAD_B | votv::PAD_RTHUMB)
                                                        : (votv::PAD_X | votv::PAD_Y | votv::PAD_LTHUMB))) != 0;
-                target[0] = thumb ? 1.f : 0.f;
+                // Touch states (UEVR OpenXR actions, research doc): a thumb resting on A/B (X/Y) or the thumbrest
+                // lowers the thumb part-way; a press closes it; lifted = thumb up.
+                bool rest = false;
+                if (touch_h_[0][0] == 0) for (int s3 = 0; s3 < 2; ++s3) for (int a = 0; a < 3; ++a)
+                    touch_h_[s3][a] = API::VR::get_action_handle(s3 == 1 ? touch_right_[a] : touch_left_[a]);
+                const auto src = right ? API::VR::get_right_joystick_source() : API::VR::get_left_joystick_source();
+                for (int a = 0; a < 3; ++a) if (touch_h_[side][a] != 0 && API::VR::is_action_active(touch_h_[side][a], src)) rest = true;
+                target[0] = thumb ? 1.f : (rest ? thumb_rest_ : 0.f);
                 target[1] = std::clamp(trig, 0.f, 1.f);
                 target[2] = target[3] = target[4] = grip ? 1.f : 0.f;
             }
             if (side == 1 && src != finger_src_) { finger_src_ = src; event("fingers: source " + src); }
-            const float k = (float)std::min(1.0, dt * finger_speed_);
-            for (int f = 0; f < 5; ++f) curl_[side][f] += (target[f] - curl_[side][f]) * k;
+            // close faster than open (research doc: smoothing ~15-25 Hz, closing quicker feels right)
+            for (int f = 0; f < 5; ++f) {
+                const float rate = target[f] > curl_[side][f] ? finger_speed_ * 1.5f : finger_speed_;
+                curl_[side][f] += (target[f] - curl_[side][f]) * (float)std::min(1.0, dt * rate);
+            }
         }
         bool changed = false;
         for (int s2 = 0; s2 < 2; ++s2) for (int f = 0; f < 5; ++f) if (std::fabs(curl_[s2][f] - curl_sent_[s2][f]) > 0.01f) changed = true;
