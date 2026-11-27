@@ -90,6 +90,9 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 - Intel (docs/COMMUNITY-MODS.md, Multivoid, MIT): `ui_menu_C` is both the main and the pause menu (`isPause` bool); in the menu level it is held in `mainGamemode_C.pause_mainMenu`; members `button_start`, `txt_version`, `switcher_widgets` (sub-screens `ui_settings_C`, `ui_saveSlots_C`). Multivoid uses `ui_menu_C::Tick` as the "menu visible" signal. Cursor/focus goes through WidgetBlueprintLibrary `SetInputMode_UIOnlyEx` / `SetInputMode_GameAndUIEx` / `SetInputMode_GameOnly` and the PlayerController's `bShowMouseCursor`.
 - Plan once the lock is free, one change per test: (1) narrow the probe to `ui_menu_C`'s own WidgetTree children, skipping everything under `switcher_widgets` (the ~7,900 settings/save-slot widgets), and log each direct child's class, visibility and brush resource; (2) hide the flat-picture child via `menu_hide_widgets`; (3) cursor: log `bShowMouseCursor` and the input mode in the menu, then decide between a software cursor on UEVR's UI panel and the controls thread's laser pointer (theirs to own). Using `isPause` keeps the pause menu out of the menu-only changes unless wanted.
+### 2026-11-27 Claude (community-mods thread): survey of github.com/topics/votv
+
+- Wrote `docs/COMMUNITY-MODS.md`: 17 repos, license and reuse verdict each. Main source is Multivoid (MIT code; its `assets/` paks are not licensed, never copy them). New facts beyond GAME-INTERNALS.md: `hitResult` vs `lookAtActor`, `useSelectedAction`/`setActionIndex` to use without E, `Hold Object(manual)` pickup, main menu = `ui_menu_C` (also the pause menu, `isPause`) via `mainGamemode_C.pause_mainMenu`, 0.10.x off-hand functions, game also offers Vulkan (UEVR is DX11/DX12 only). Research only; game install not touched.
 
 ### 2026-11-27 Claude (controls thread): first in-game runs of the controls plugin (01:34, 01:36), blocked at the content warning
 
