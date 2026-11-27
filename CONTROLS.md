@@ -244,3 +244,28 @@ data) is a later item.
 - Flashlight: `light_R` and the game's flashlight model in the left hand, model visible only while on (`flash_*`).
 - Not working yet: the flat-projection selection marker may still be offset (section 1 open issue); menus use the
   menu thread's pointer.
+
+## 7. Button map for the next test (2026-11-27, `Play-VOTV-VR.bat`)
+
+| Control | Does | Notes |
+|---|---|---|
+| Right hand pointing | aims: highlight, pick up, use, gravity gun | HUD and view stay on the head |
+| Right trigger | left mouse: throw / use held item | menus: click (pointer) |
+| Right grip | E: grab, pick up, use; hold = carry | |
+| A | jump (ATV: brake) | |
+| B | R: drop (tap and hold differ) | |
+| Right stick left/right | smooth turn | |
+| Right stick up/down | mouse wheel (hold distance) | menus: scroll |
+| Right stick click | flashlight on/off (light and model in the left hand) | |
+| Left stick | walk (W/A/S/D) | |
+| Left stick click | run (latched until the stick centres) | |
+| Left trigger | Alt: use equipment | |
+| X | crouch | |
+| Y | inventory | |
+| Menu button | tap = Esc (pause / get off ATV), hold 1 s = recentre | |
+| Hold left grip + right stick | rotate the held object | turning pauses |
+| Hold left grip + A / B / X / Y | lock object / offhand / highlight nearby / zoom | |
+| Hold left grip + right stick click | **mark** (screenshot + state into `marks\`, short buzz) | F8 on the keyboard does the same |
+
+Keyboard stays for hotbar 1-0, quicksave and the in-game computers. Live switches in
+`scripts/votv_controls.txt`: `hand_gpcm_hook=0` (head aim), `hands_show=0`, `flash_on=0`, `ctl_left_handed=1`.
