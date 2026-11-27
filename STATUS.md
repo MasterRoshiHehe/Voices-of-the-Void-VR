@@ -76,6 +76,9 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 ## Log
 
+### 2026-11-27 Claude (runtime thread): other mod loaders flagged
+
+- Wiki note (docs/MODDING-WIKI.md): many players run Thunderstore's shimloader / UE4SS as `dwmapi.dll` next to the exe; UEVR with them is untested, and some early 0.9.0 builds crash on leftover loader files. `run-vr.ps1` now logs `game Win64 folder extras: ...` and warns on known proxy-DLL names; `check-run.ps1` has a `mod-loaders` check (UNSURE when one is present). Our launcher still adds nothing to the game folder. A UE4SS helper must also refuse unpinned builds (see vr-mod-game-patches) and its cleanup must remove every file it adds. Dry run: extras none.
 ### 2026-11-27 Claude (menu thread): main menu back to a flat 2D screen (ready to test)
 
 - User 00:55: "menu is exactly as messed up as it has been so far. just make it back to a 2d menu". That was the graphics run `logs6-11-27_01-45-25`: the BackgroundBlur hide was **not active** there (staged off; no `menu: hid` lines in its log), so the blur hypothesis is untested. Parked with the view lock, both default off.

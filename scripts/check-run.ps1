@@ -97,6 +97,12 @@ if ($noInject) {
     }
 }
 
+# Other mod loaders in the game folder (UEVR + UE4SS/shimloader is untested).
+$ld = Find $run 'mod loader files next to the game exe: ([^.]*)'
+$ex = Find $run 'game Win64 folder extras: (.*)$'
+if ($ld) { Add-Check UNSURE mod-loaders "$($ld.Matches[0].Groups[1].Value) present: UEVR with another loader is untested" }
+elseif ($ex) { Add-Check PASS mod-loaders "Win64 extras: $($ex.Matches[0].Groups[1].Value)" }
+
 # 5. Run finished and cleaned up.
 $err = Find $run 'ERROR: (.*)$'
 if ($err) { Add-Check FAIL run-error $err.Matches[0].Groups[1].Value }
