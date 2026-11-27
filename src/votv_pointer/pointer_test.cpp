@@ -147,6 +147,30 @@ int main() {
         check(!g.paused(521), "guard: pause ends after 500 ms");
     }
 
+    // preLoad warning screen (menu-laser thread, 2026-11-27): ui_disclaimer_C button geometry logged in run
+    // logs\2026-11-27_02-52-38 (flat mode, viewport 2560x1440): button_quit top-left 880,1022 size 267x85,
+    // button_play (Proceed) top-left 1413,1022 size 267x85. A controller ray aimed at Proceed's centre on the
+    // 2D screen (default model) must map to a pixel inside Proceed and outside Quit. Paper check only: it
+    // assumes UEVR's 2D screen shows the 2560x1440 viewport 1:1, which the 02:45 quit (a click at Proceed's
+    // flat position quit the game in 2D mode) contradicts; so preLoad 2D stays off whatever this says.
+    {
+        const int W = 2560, H = 1440;
+        auto inside = [](Pixel p, long x, long y, long w, long h) { return p.x >= x && p.x < x + w && p.y >= y && p.y < y + h; };
+        Vec3 head{0, 1.6f, 0};
+        auto s = place_screen(head, Quat{}, ScreenModel{});
+        Vec3 o{0.25f, 1.2f, -0.35f};  // right controller, low and ahead
+        for (auto [bx, label] : {std::pair{1413.f, "Proceed"}, std::pair{880.f, "Quit"}}) {
+            float u = (bx + 133.5f) / W, v = (1022.f + 42.5f) / H;
+            Vec3 target = s->center + s->right * ((u - 0.5f) * s->width) + s->up * ((0.5f - v) * s->height);
+            auto h = hit_screen(*s, o, normalize(target - o));
+            Pixel p = h ? uv_to_pixel(h->u, h->v, W, H) : Pixel{-1, -1};
+            bool proceed = inside(p, 1413, 1022, 267, 85), quit = inside(p, 880, 1022, 267, 85);
+            bool want_proceed = label[0] == 'P';
+            check(h && h->on_screen && proceed == want_proceed && quit == !want_proceed,
+                  want_proceed ? "preLoad: aiming at Proceed maps to Proceed, not Quit" : "preLoad: aiming at Quit maps to Quit");
+        }
+    }
+
     std::printf("%s (%d failed)\n", fails ? "FAILED" : "ALL PASS", fails);
     return fails ? 1 : 0;
 }
