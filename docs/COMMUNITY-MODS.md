@@ -33,7 +33,7 @@ reflection (UE4SS / UEVR do this) and never hard-code an offset from these repos
 | VOTV-MP/Multivoid-wiki, Multivoid-server | none | Empty / planned | Nothing yet |
 | j1sk1ss/AnizottiVOTV.EXMPL, wolfey-dev/votv-quickshell, Obimydudee/SpaceTranslator | various | Minecraft mod, desktop shell, Discord bot | Off-topic |
 
-No existing VR attempt is on the topic page.
+No existing VR attempt is on the topic page. Loader, Blueprint-pak and interaction notes from the community modding wiki are in [MODDING-WIKI.md](MODDING-WIKI.md).
 
 ## Multivoid: the parts that matter for VR
 

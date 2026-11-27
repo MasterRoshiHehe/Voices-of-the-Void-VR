@@ -16,6 +16,8 @@ session (or the other agent) picks up the work.
 - Launch for testing: `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
 - Who owns the game install right now: nobody (controls thread released it 2026-11-27 02:31 after the self-check run). Next: user Test-Controls retest.
+- Who owns the game install right now: nobody (menu thread released it 2026-11-27 02:16 after the flat click test). Next in queue: runtime thread (UEVR nightly quit-crash A/B), then controls retest.
+- Who owns the game install right now: nobody (runtime thread released it 2026-11-27 02:23 after the nightly A/B; controls retest next)
 
 ## Rendering compatibility
 
