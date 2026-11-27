@@ -20,6 +20,7 @@
 #define XR_USE_PLATFORM_WIN32
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
+#include <MinHook.h>   // BSD-2, tools/minhook (not in the repo)
 
 namespace xrh {
 
@@ -147,11 +148,16 @@ inline void install() {
         g_loader = LoadLibraryW(p.c_str());
     }
     if (!g_loader) { g_log += "openxr_loader.dll not found; "; return; }
-    g_orig_create = (PFN_xrCreateInstance)GetProcAddress(g_loader, "xrCreateInstance");
-    if (!g_orig_create) { g_log += "xrCreateInstance not exported; "; return; }
-    int n = backend ? patch_imports(backend, "xrCreateInstance", (void*)&hooked_create) : 0;
-    bool e = patch_export(g_loader, "xrCreateInstance", (void*)&hooked_create);
-    g_log += "hook: " + std::to_string(n) + " import slot(s), export " + (e ? "patched" : "not patched") + "; ";
+    void* target = (void*)GetProcAddress(g_loader, "xrCreateInstance");
+    if (!target) { g_log += "xrCreateInstance not exported; "; return; }
+    // Run 18:58: patching import/export entries missed UEVR's call (it already held the function pointer), so the
+    // function body itself is hooked (MinHook trampoline): every caller goes through the wrapper.
+    MH_STATUS st = MH_Initialize();
+    if (st != MH_OK && st != MH_ERROR_ALREADY_INITIALIZED) { g_log += "MinHook init failed; "; return; }
+    st = MH_CreateHook(target, (void*)&hooked_create, (void**)&g_orig_create);
+    if (st == MH_OK) st = MH_EnableHook(target);
+    g_log += std::string("hook on xrCreateInstance: ") + (st == MH_OK ? "enabled" : ("failed " + std::to_string((int)st))) + "; ";
+    (void)backend;
 }
 
 // ---- runtime: trackers and per-finger curl ----
