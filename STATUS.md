@@ -15,7 +15,7 @@ session (or the other agent) picks up the work.
 - Publisher guidance and chosen scope: [dated sources in RESEARCH.md; user decision and unknowns]
 - Launch for testing: `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
-- Who owns the game install right now: **controls thread, live session with the user** (from 2026-11-27 02:44, -Controls)
+- Who owns the game install right now: nobody (controls run 02:58 froze on loading the save and was killed 03:02; next start only on the user's go)
 
 ## Rendering compatibility
 
@@ -76,6 +76,21 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 | 2026-11-27 00:39:22, 00:47:26, 00:57:09, 01:02:32, 01:07:06, 01:10:38 | same: 0xc0000409 (fail-fast) at 0x7ff82415c28f, module unknown (Application log event 1000) | runs 00:28, 00:43, 00:55, 01:01, 01:05, 01:09 | 5e690d8f, UEVR 1.05, **OpenXR (VDXR) only** | quitting the game, every time | Exit-time crash on UEVR OpenXR shutdown (not Lua: first two runs had no scripts). Gameplay unaffected; saves made before quitting are fine as far as known. Owner: runtime thread. |
 
 ## Log
+
+### 2026-11-27 Claude (menu thread): -LateInject: menus flat via Virtual Desktop's own laser, F10 switches to VR
+
+- New plan (user/coordinator): skip VR for the menus; the game starts flat so Virtual Desktop shows it in its desktop view, where VD's built-in laser moves the real mouse. `run-vr.ps1 -LateInject`: launch flat (-d3d11), then wait (bounded, `-LateInjectTimeoutMinutes`, default 60) for **F10** (GetAsyncKeyState, any window focused), 3 s, then the usual UEVR injection and checks. A map-load trigger isn't possible: the shipping build writes no `VotV.log` (`%LOCALAPPDATA%\VotV\Saved\Logs` holds only an empty cef3.log).
+- `Play-VOTV-VR.bat` and `Play-VOTV-VR-SteamVR.bat` (repo root and game folder) now pass `-LateInject` and say "Menus: use Virtual Desktop's desktop laser. Once your save has loaded, press F10 to switch to VR." The SteamVR one keeps `-Runtime OpenVR`.
+- votv_pointer.dll is not installed with -LateInject (even with -Pointer; logged) and is removed from the profile's plugins folder at every launch (none there now). Source kept. The UEVR 2D-main-menu Lua stays (inactive: the menu is passed before injection).
+- Checked: parse OK, `Play-VOTV-VR.bat -DryRun -Pointer` (pointer ignored, OpenXR, stops before launch), GetAsyncKeyState call works. The F10 wait itself is untested (needs a run).
+- Freeze report (03:03): no VotV process running any more; UEVR log ends 03:02:23 with "Sending rehook request for D3D / Unhooking D3D11 / Hooking D3D11 / Hooked DirectX 11" (a D3D re-hook during the load); no game log exists to show more.
+
+### 2026-11-27 Claude (controls thread): freeze on loading the save (run 02:58) with the arm() native-flag hook; reverted
+
+- Run `logs/2026-11-27_02-58-06`: `votv_hand_aim.lua` set FUNC_Native on `mainPlayer_C:arm` (flags 0x1C420000 -> 0x1C420400) and hooked it with `hook_ptr` at 02:58:58. **The game froze while loading into the save** (user 03:02); I killed it at 03:02:28. Most likely cause: forcing the native flag on a Blueprint function. Not proven, no dump read. Don't retry this route.
+- Same session: aim 2 (the 02:01/02:52 setup) moves the whole HUD with the hand and selects on yaw only (user 02:56). The 02:01 and 02:52 runs were configured the same in gameplay (same UEVR settings, 2D screen off in gameplay, no hand script), per their logs.
+- Reverted to that setup (`ctl_aim_method=2`, `hand_aim=0`: script idle, no hook). Next idea, not built: leave the game's camera alone and give the hand ray to the game another way (UE4SS hook, which handles Blueprint functions properly).
+- User 03:02: in the menu the cursor shows only with the physical mouse, not the controller. Asked to reuse Virtual Desktop's own laser pointer as in the Sims 4 VR mod (for the menu thread).
 
 ### 2026-11-27 Claude (menu thread): preLoad removed from the 2D list (Proceed click quit the game); geometry probe
 
