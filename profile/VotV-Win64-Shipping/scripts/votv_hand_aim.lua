@@ -64,7 +64,12 @@ end
 
 local function setup(pawn)
     state.pawn, state.hand, state.arms_done = pawn, nil, false
-    kml = kml or find("Class /Script/Engine.KismetMathLibrary")
+    -- static library functions are called on the class default object, not the class
+    if kml == nil then
+        local c = find("Class /Script/Engine.KismetMathLibrary")
+        if c ~= nil then pcall(function() kml = c:get_class_default_object() end) end
+        kml = kml or find("KismetMathLibrary /Script/Engine.Default__KismetMathLibrary")
+    end
     scene_class = scene_class or find("Class /Script/Engine.SceneComponent")
     hit = hit or struct("ScriptStruct /Script/Engine.HitResult")
     if kml == nil or scene_class == nil then log("setup: classes not found"); return end
