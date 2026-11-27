@@ -127,6 +127,14 @@ local function make_flashlight(pawn)
     if light == nil then log("flashlight: pawn.light_R not found"); return end
     local mine = add_comp(pawn, "Class /Script/Engine.SpotLightComponent")
     if mine == nil then log("flashlight: AddComponentByClass(SpotLightComponent) failed"); return end
+    -- Run 16:59: our light gave no light. Runtime-added lights must be Movable, and the game's light may use
+    -- light units and an IES profile (Narrow10000 is referenced by the player), so copy those too.
+    pcall(function() mine:SetMobility(2) end)
+    pcall(function() mine.IntensityUnits = light.IntensityUnits end)
+    pcall(function() mine:SetIESTexture(light.IESTexture) end)
+    pcall(function() mine:SetUseIESBrightness(light.bUseIESBrightness) end)
+    pcall(function() mine:SetIESBrightnessScale(light.IESBrightnessScale) end)
+    pcall(function() mine:SetSourceRadius(light.SourceRadius) end)
     pcall(function() mine:SetIntensity(light.Intensity) end)
     pcall(function() mine:SetAttenuationRadius(light.AttenuationRadius) end)
     pcall(function() mine:SetOuterConeAngle(light.OuterConeAngle) end)
@@ -134,6 +142,11 @@ local function make_flashlight(pawn)
     pcall(function() mine:SetLightColor(light:GetLightColor(), true) end)
     pcall(function() mine:SetCastShadows(light.CastShadows) end)
     st.game_light, st.light, st.light_int = light, mine, 0
+    pcall(function()
+        log(string.format("flashlight: game light intensity %s units %s radius %s cones %s/%s IES %s mobility %s",
+            tostring(light.Intensity), tostring(light.IntensityUnits), tostring(light.AttenuationRadius),
+            tostring(light.InnerConeAngle), tostring(light.OuterConeAngle), tostring(light.IESTexture ~= nil), tostring(light.Mobility)))
+    end)
     st.light_state = mc_state(mine, cfg.flash_hand)
     set_offset(st.light_state, cfg.flash_x, cfg.flash_y, cfg.flash_z)
     log("flashlight: own light on the " .. (cfg.flash_hand == 1 and "right" or "left") .. " controller (game light left in place, dimmed)")
@@ -148,7 +161,7 @@ local function sync_light()
     local gi = g.Intensity
     if gi ~= nil and gi > 0 then st.light_int = gi; g:SetIntensity(0) end
     if on ~= st.light_on then st.light_on = on; m:SetVisibility(on, false) end
-    if st.light_int > 0 and m.Intensity ~= st.light_int then m:SetIntensity(st.light_int) end
+    if st.light_int > 0 and m.Intensity ~= st.light_int then m:SetIntensity(st.light_int); log("flashlight: our light intensity " .. tostring(st.light_int)) end
 end
 
 local function make_torch_model(pawn)

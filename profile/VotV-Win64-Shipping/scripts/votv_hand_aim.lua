@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hand] " .. tostring(s)) end) end
 
-local cfg = { hand_aim = 1, hand_arms = 0, hand_log_s = 2, hand_pre_apply = 0, hand_tick_apply = 0, hand_max_cm = 150, hand_gpcm_hook = 1 }
+local cfg = { hand_aim = 1, hand_arms = 0, hand_log_s = 2, hand_pre_apply = 0, hand_tick_apply = 0, hand_max_cm = 150, hand_gpcm_hook = 1, hand_marker_box = 1, hand_hide_flat_marker = 1 }
 local active = false
 
 local function parse_cfg(text)
@@ -136,6 +136,28 @@ hook_gpcm = function()
     log(ok and "hooked GameplayStatics.GetPlayerCameraManager (pre: camera manager to the hand)" or ("GetPlayerCameraManager hook failed: " .. tostring(err)))
 end
 
+
+-- Selection marker (user 16:55: the highlight still follows the head). The game's own marker is a flat-screen
+-- projection through the head camera (ui_UI_C canvas_lookatBounds / switcher_crosshair), so it can't show a
+-- hand-picked target. Instead: hide those two widgets and show the pawn's own lookatBox, a box component the game
+-- moves to the look-ray hit point every tick (docs/GAME-INTERNALS.md section 2), as a wire box in the world.
+-- Re-applied every second because the game re-shows its widgets. Switches: hand_marker_box, hand_hide_flat_marker.
+local marker_t, ui_cls = 0, nil
+local function update_marker(pawn, delta)
+    marker_t = marker_t + delta
+    if marker_t < 1 then return end
+    marker_t = 0
+    pcall(function() pawn.lookatBox:SetHiddenInGame(cfg.hand_marker_box == 0, false) end)
+    if cfg.hand_hide_flat_marker ~= 0 then
+        ui_cls = ui_cls or find("WidgetBlueprintGeneratedClass /Game/umg/interfaces/ui_UI.ui_UI_C")
+        if ui_cls == nil then return end
+        local ui = UEVR_UObjectHook.get_first_object_by_class(ui_cls, false)
+        if ui == nil then return end
+        pcall(function() ui.canvas_lookatBounds:SetVisibility(2) end)   -- ESlateVisibility::Hidden
+        pcall(function() ui.switcher_crosshair:SetVisibility(2) end)
+    end
+end
+
 uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
     if not active or cfg.hand_aim == 0 then return end
     local ok, err = pcall(function()
@@ -145,6 +167,7 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
         if not pn:find("mainPlayer") then return end
         if pawn ~= state.pawn or state.hand == nil or not UEVR_UObjectHook.exists(state.hand) then setup(pawn) end
         if state.hand == nil then return end
+        pcall(update_marker, pawn, delta)
         if cfg.hand_arms ~= 0 and not state.arms_done then attach_arms(pawn) end
         local pc = api:get_player_controller(0)
         local pcm = pc and pc.PlayerCameraManager
