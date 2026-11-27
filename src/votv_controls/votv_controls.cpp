@@ -107,7 +107,9 @@ public:
         if (t - settings_check_t_ > 1000) { settings_check_t_ = t; load_settings(false); poll_driver_file(); }
 
         if (t - uevr_check_t_ > 1000) { uevr_check_t_ = t; enforce_uevr_values(); }
-        if (t - cfg_sent_t_ > 2000) { cfg_sent_t_ = t; API::get()->dispatch_lua_event("votv_cfg", settings_text_.c_str()); }
+        if (t - cfg_sent_t_ > 2000) { cfg_sent_t_ = t; API::get()->dispatch_lua_event("votv_cfg", settings_text_.c_str());
+            if (presets_t_ == 0) load_presets(); else API::get()->dispatch_lua_event("votv_presets", presets_text().c_str()); presets_t_ = t; }
+        if (t - settings_check_t_ < 50) poll_preset_saves();
 
         votv::PadState p;
         double pad_t;
@@ -379,9 +381,15 @@ private:
                     touch_h_[s3][a] = API::VR::get_action_handle(s3 == 1 ? touch_right_[a] : touch_left_[a]);
                 const auto src = right ? API::VR::get_right_joystick_source() : API::VR::get_left_joystick_source();
                 for (int a = 0; a < 3; ++a) if (touch_h_[side][a] != 0 && API::VR::is_action_active(touch_h_[side][a], src)) rest = true;
-                target[0] = thumb ? 1.f : (rest ? thumb_rest_ : 0.f);
-                target[1] = std::clamp(trig, 0.f, 1.f);
-                target[2] = target[3] = target[4] = grip ? 1.f : 0.f;
+                // Pose presets per button state (user 19:19: "save presets for the different button presses").
+                // Base pose: open -> trigger (blended by how far the trigger is pulled), or grip -> fist with the
+                // grip held; the thumb comes from the "thumb rest" / "thumb press" preset when touched / pressed.
+                const float tv = std::clamp(trig, 0.f, 1.f);
+                const float* a = presets_[grip ? P_GRIP : P_OPEN];
+                const float* b = presets_[grip ? P_FIST : P_TRIGGER];
+                for (int f = 0; f < 5; ++f) target[f] = a[f] + (b[f] - a[f]) * tv;
+                if (thumb) target[0] = presets_[P_THUMB_PRESS][0];
+                else if (rest) target[0] = presets_[P_THUMB_REST][0];
             }
             if (side == 1 && src != finger_src_) { finger_src_ = src; event("fingers: source " + src); }
             // close faster than open (research doc: smoothing ~15-25 Hz, closing quicker feels right)
@@ -399,6 +407,62 @@ private:
                  curl_[0][0], curl_[0][1], curl_[0][2], curl_[0][3], curl_[0][4], curl_[1][0], curl_[1][1], curl_[1][2], curl_[1][3], curl_[1][4]);
         std::memcpy(curl_sent_, curl_, sizeof(curl_));
         API::get()->dispatch_lua_event("votv_fingers", buf);
+    }
+
+
+    // ---- hand pose presets (votv_hand_presets.txt in the profile folder; edited from the Lua debug panel) ----
+    enum { P_OPEN, P_TRIGGER, P_GRIP, P_FIST, P_THUMB_REST, P_THUMB_PRESS, P_COUNT };
+    static constexpr const char* preset_names_[P_COUNT]{"open", "trigger", "grip", "fist", "thumb_rest", "thumb_press"};
+    float presets_[P_COUNT][5]{
+        {0.10f, 0.10f, 0.10f, 0.10f, 0.10f}, {0.10f, 0.85f, 0.10f, 0.10f, 0.10f}, {0.20f, 0.10f, 0.90f, 0.90f, 0.90f},
+        {0.60f, 0.90f, 0.90f, 0.90f, 0.90f}, {0.50f, 0.f, 0.f, 0.f, 0.f}, {0.90f, 0.f, 0.f, 0.f, 0.f}};
+    std::streamoff log_pos_{-1};
+    double presets_t_{0};
+
+    std::string presets_text() {
+        std::string t;
+        for (int i = 0; i < P_COUNT; ++i) {
+            char b[160]; snprintf(b, sizeof(b), "%s=%.2f %.2f %.2f %.2f %.2f\n", preset_names_[i],
+                                  presets_[i][0], presets_[i][1], presets_[i][2], presets_[i][3], presets_[i][4]);
+            t += b;
+        }
+        return t;
+    }
+    void parse_presets(const std::string& text) {
+        for (int i = 0; i < P_COUNT; ++i) {
+            auto k = text.find(std::string(preset_names_[i]) + "=");
+            if (k == std::string::npos) continue;
+            float v[5]; int n = sscanf_s(text.c_str() + k + strlen(preset_names_[i]) + 1, "%f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4]);
+            if (n == 5) for (int f = 0; f < 5; ++f) presets_[i][f] = std::clamp(v[f], 0.f, 1.f);
+        }
+    }
+    void load_presets() {
+        std::string t = read_file(dir_ / "votv_hand_presets.txt");
+        if (!t.empty()) parse_presets(t);
+        event(std::string("fingers: presets ") + (t.empty() ? "default" : "loaded from votv_hand_presets.txt"));
+        API::get()->dispatch_lua_event("votv_presets", presets_text().c_str());
+    }
+    // The Lua panel can't write files, so it logs "PRESETS SAVE <text>"; read new UEVR log lines every second.
+    void poll_preset_saves() {
+        std::ifstream f(dir_ / "log.txt", std::ios::binary);
+        if (!f) return;
+        f.seekg(0, std::ios::end);
+        std::streamoff end = f.tellg();
+        if (log_pos_ < 0 || end < log_pos_) { log_pos_ = end; return; }
+        if (end == log_pos_) return;
+        f.seekg(log_pos_);
+        std::string chunk((size_t)(end - log_pos_), '\0');
+        f.read(chunk.data(), chunk.size());
+        log_pos_ = end;
+        auto k = chunk.rfind("PRESETS SAVE ");
+        if (k == std::string::npos) return;
+        std::string line = chunk.substr(k + 13, chunk.find('\n', k) - k - 13);
+        for (auto& c : line) if (c == ';') c = '\n';
+        parse_presets(line);
+        std::ofstream o(dir_ / "votv_hand_presets.txt", std::ios::binary | std::ios::trunc);
+        o << presets_text();
+        event("fingers: presets saved to votv_hand_presets.txt");
+        API::get()->dispatch_lua_event("votv_presets", presets_text().c_str());
     }
 
     // UEVR mod values this plugin owns. Checked every second; re-set and logged when they differ (profile
