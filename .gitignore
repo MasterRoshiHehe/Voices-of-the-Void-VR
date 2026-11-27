@@ -1,0 +1,81 @@
+# Voices of the Void VR mod. Keep game material, downloaded third-party binaries and the
+# human's voice out of git. Check `git status` before every commit.
+
+# Voice playtests: the human's recorded voice, transcripts and session state
+sessions/
+CURRENT_SESSION.txt
+*.wav
+*.flac
+*.mp3
+
+# Run output: eye captures, mirror streams, traces, logs, failure previews
+runs/
+logs/
+captures/
+*.rgb
+*.times
+*.ppm
+*.preview.png
+*.jsonl
+*.log
+
+# Crash and memory dumps of the game process
+*.dmp
+*.mdmp
+
+# Decompiler and disassembler projects and output: they hold the game's code
+*.gpr
+*.rep/
+*.idb
+*.i64
+*.id0
+*.id1
+*.nam
+*.til
+ghidra/
+decompiled/
+signatures/
+
+# UE4SS / FModel dumps and exports: generated from the game's own classes and paks.
+# Keep findings as prose in docs instead.
+dumps/
+UHTHeaderDump/
+CXXHeaderDump/
+ObjectDump*.txt
+UE4SS_ObjectDump*
+Exports/
+fmodel/
+
+# Game files copied in for testing
+*.pak
+*.ucas
+*.utoc
+*.sig
+*.exe.bak
+
+# Downloaded third-party tools and archives (UEVR, OpenVR SDK, mirror-capture build). See README.
+tools/
+*.zip
+*.7z
+*.tgz
+*.tar.gz
+kit-setup*
+
+# Build output and Python
+build/
+out/
+.venv/
+__pycache__/
+*.pyc
+
+# Local and secret settings
+.claude/settings.local.json
+.env
+*.env
+*.user.config
+
+# Editor and OS clutter
+.vs/
+.vscode/
+Thumbs.db
+desktop.ini
