@@ -370,7 +370,15 @@ local function setup(pawn)
     st.game_light, st.light_on, st.light_int = nil, nil, 0
     if not libs() then log("setup: Kismet libraries not found"); return end
     if cfg.hands_show ~= 0 then
-        local mm = cfg.hands_style == 2 and load_mannequin() or nil
+        -- Style 3 (2026-11-27 pak search for the user): the game has no rigged Dr. Kel with fingers (his models
+        -- are posed static meshes, kel3Pose_stand etc., and the player body kel_lmao has 6 bones), but the player
+        -- Blueprint references kerfurOmega_KelSkin, a Kel-skinned Kerfur Omega with finger bones, so it's loaded.
+        local mm = nil
+        if cfg.hands_style == 3 then
+            mm = find("SkeletalMesh /Game/meshes/kerfurAnthro/sk/kerfurOmega_KelSkin.kerfurOmega_KelSkin")
+            log("hands: kerfurOmega_KelSkin in memory: " .. tostring(mm ~= nil))
+        end
+        if mm == nil and cfg.hands_style >= 2 then mm = load_mannequin() end
         if mm ~= nil then make_mannequin_hand(pawn, 1, mm); make_mannequin_hand(pawn, 0, mm)
         elseif cfg.hands_style >= 1 then make_built_hand(pawn, 1); make_built_hand(pawn, 0); apply_hand_offsets()
         else make_hand(pawn, 1); make_hand(pawn, 0) end
