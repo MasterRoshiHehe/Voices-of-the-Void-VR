@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_style = 1, hands_scale = 1,
+local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_r_yaw = -90, hands_r_roll = 180, hands_l_yaw = -90, hands_l_roll = 0, hands_style = 1, hands_scale = 1,
               flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 500, hands_force_mat = 0, flash_copy_game = 1, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
@@ -184,6 +184,13 @@ local function pose_hand(side)
             local r0 = st.ref_rot[side][sd]
             local base = kml:ComposeRotators(rot(r0.Pitch, r0.Yaw, r0.Roll), rot(0, -mx * cfg.hands_auto_yaw, 0))
             local final = kml:ComposeRotators(base, rot(cfg.hands_pitch, mx * cfg.hands_yaw, mx * cfg.hands_roll))
+            -- Mark 18:11 (first working vr.jpg, controllers held upright): both hands lay flat, palms down,
+            -- fingers along the controllers' right axis. Per-hand turn in the controller frame, yaw then roll:
+            -- right yaw -90 roll 180, left yaw -90 roll 0 (fingers along the controller, palms facing inward).
+            local py = side == 1 and cfg.hands_r_yaw or cfg.hands_l_yaw
+            local pr = side == 1 and cfg.hands_r_roll or cfg.hands_l_roll
+            final = kml:ComposeRotators(final, rot(0, py, 0))
+            final = kml:ComposeRotators(final, rot(0, 0, pr))
             comp:SetBoneRotationByName(f, final, COMP)
             local r, k = st.ref_scale[side][sd], cfg.hands_scale
             comp:SetBoneScaleByName(f, vec(r.X * k, r.Y * k, r.Z * k), COMP)
