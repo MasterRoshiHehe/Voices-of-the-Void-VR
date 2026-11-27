@@ -118,6 +118,34 @@ public:
         }
         if (!blocked_.empty()) { event("unblocked (was " + blocked_ + ")"); blocked_.clear(); }
         mapper_.update(p, t);
+        smooth_turn(p, t);
+    }
+
+    // Smooth turn (default; user 2026-11-27: "I hate snap turning"): right stick X outside the grip layer turns
+    // the player at up to ctl_turn_speed deg/s. Method 0: the game's own AddControllerYawInput on the pawn
+    // (Val * InputYawScale degrees, scale assumed 2.5, setting ctl_yaw_scale); method 1: UEVR's VR rotation offset.
+    void smooth_turn(const votv::PadState& p, double t) {
+        const double dt = turn_t_ > 0 ? std::min(100.0, t - turn_t_) / 1000.0 : 0.0;
+        turn_t_ = t;
+        if (snap_turn_ || layer_on_ || dt <= 0) return;
+        const float dz = turn_deadzone_, ax = std::fabs(p.rx);
+        if (ax <= dz) { if (turning_) { turning_ = false; event("smooth turn stop"); } return; }
+        const float k = (ax - dz) / (1.f - dz);
+        const float deg = (p.rx > 0 ? 1.f : -1.f) * k * k * turn_speed_ * (float)dt;   // squared curve: fine control near centre
+        if (!turning_) { turning_ = true; event("smooth turn start (method " + std::to_string(turn_method_) + ")"); }
+        if (turn_method_ == 0) {
+            auto pawn = API::get()->get_local_pawn(0);
+            if (pawn == nullptr) return;
+            struct { float Val; } params{deg / yaw_scale_};
+            pawn->call_function(L"AddControllerYawInput", &params);
+        } else {
+            UEVR_Quaternionf q{};
+            API::get()->param()->vr->get_rotation_offset(&q);
+            const float h = -deg * 3.14159265f / 360.f;   // half angle, yaw about the up axis (Y in UEVR's space)
+            const float c = std::cos(h), s = std::sin(h);
+            UEVR_Quaternionf r{q.w * c - q.y * s, q.x * c - q.z * s, q.w * s + q.y * c, q.x * s + q.z * c};   // q * yaw(h)
+            API::get()->param()->vr->set_rotation_offset(&r);
+        }
     }
 
 private:
@@ -126,7 +154,10 @@ private:
     std::mutex pad_mtx_;
     votv::PadState pad_{};
     double pad_t_{0}, settings_check_t_{0}, uevr_check_t_{0};
-    bool layer_on_{false};
+    bool layer_on_{false}, turning_{false};
+    double turn_t_{0};
+    float turn_speed_{120}, turn_deadzone_{0.2f}, yaw_scale_{2.5f};
+    int turn_method_{0};
     int rstick_x_state_{0};
     votv::Mapper mapper_;
     bool seen_pad_{false}, zero_pad_{true}, snap_turn_{true};
@@ -201,7 +232,11 @@ private:
         s.menu_hold_ms = num("ctl_menu_hold_ms", s.menu_hold_ms);
         s.run_latch = num("ctl_run_latch", 1) != 0;
         zero_pad_ = num("ctl_zero_pad", 1) != 0;
-        snap_turn_ = num("ctl_snap_turn", 1) != 0;
+        snap_turn_ = num("ctl_snap_turn", 0) != 0;     // 0 = smooth turn (default), 1 = UEVR snap turn
+        turn_speed_ = num("ctl_turn_speed", turn_speed_);
+        turn_deadzone_ = std::clamp(num("ctl_turn_deadzone", turn_deadzone_), 0.f, 0.9f);
+        yaw_scale_ = std::max(0.01f, num("ctl_yaw_scale", yaw_scale_));
+        turn_method_ = (int)num("ctl_turn_method", 0);
         int aim = (int)num("ctl_aim_method", 2);   // UEVR enum: 0 game, 1 head, 2 right controller, 3 left
         if (s.left_handed && aim == 2) aim = 3;
         if (aim >= 0 && aim <= 5) aim_method_ = aim;
