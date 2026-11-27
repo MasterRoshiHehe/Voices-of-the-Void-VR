@@ -116,6 +116,9 @@ visible to anyone, so no game files, dumps, logs, local paths with usernames or 
     (merge commit) and pushes both. It stops on a conflict instead of guessing; resolve it on
     your branch and merge again.
   - `... git-feature.ps1 status` lists unmerged feature branches and uncommitted files.
+  - Pushing: the agent PowerShell tool can't reach the Git Credential Manager ("terminal prompts
+    disabled"), so leave off `-Push` there and push from the Bash tool instead:
+    `git push -u origin feature/<topic> dev`. Retry network errors up to 4 times.
 - **Commit often, small.** One change per commit, message says what and why, plus the run ID or
   check verdict when there is one. End messages with the `Co-Authored-By` line you're given.
 - **Never commit** anything `.gitignore` excludes: `tools\` (UEVR, OpenVR SDK, mirror-capture
