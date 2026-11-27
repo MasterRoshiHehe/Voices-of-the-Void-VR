@@ -414,6 +414,55 @@ local function move_dot()
     pcall(function() dot.slot:SetPosition(vec2(pos.X - umg_dot_px / 2, pos.Y - umg_dot_px / 2)) end)
 end
 
+-- Geometry probe (log only): where the menu's buttons really are in Slate's absolute (desktop) pixels, the
+-- viewport size and DPI scale, and the mouse in both spaces. Needed because with UEVR's 2D screen on, a click at
+-- Proceed's flat-mode desktop position quit the game (controls thread, 2026-11-27 02:40/02:45): the layout or
+-- the window-to-viewport mapping differs from flat mode. Logged once per visible menu widget per world.
+local geom_logged = {}
+local function v2s(v) return v and string.format("%.0f,%.0f", v.X or -1, v.Y or -1) or "?" end
+local function log_menu_geometry(world)
+    local wll = cdo("Class /Script/UMG.WidgetLayoutLibrary")
+    local sbl = cdo("Class /Script/UMG.SlateBlueprintLibrary")
+    if wll and world then
+        log("  geometry: viewport size " .. v2s(try(function() return wll:GetViewportSize(world) end, nil)) ..
+            " scale " .. tostring(try(function() return wll:GetViewportScale(world) end, "?")) ..
+            " mouse viewport " .. v2s(try(function() return wll:GetMousePositionOnViewport(world) end, nil)) ..
+            " mouse platform " .. v2s(try(function() return wll:GetMousePositionOnPlatform() end, nil)))
+    end
+    if sbl == nil then log("  geometry: SlateBlueprintLibrary not found"); return end
+    local ucls = try(function() return api:find_uobject("Class /Script/UMG.UserWidget") end, nil)
+    local bcls = try(function() return api:find_uobject("Class /Script/UMG.Button") end, nil)
+    if ucls == nil or bcls == nil then return end
+    for _, w in ipairs(try(function() return UEVR_UObjectHook.get_objects_by_class(ucls, false) end, {}) or {}) do
+        local wn = name_of(w)
+        if (wn:find("ui_menu_C", 1, true) or wn:find("ui_disclaimer_C", 1, true)) and not geom_logged[wn]
+            and try(function() return w:IsInViewport() end, false) == true and try(function() return w:IsVisible() end, false) == true then
+            local inst = wn:match("%.([^%.]+)$")
+            local key = "." .. inst .. ".WidgetTree."
+            local n, lines, nonzero = 0, {}, false
+            for _, b in ipairs(try(function() return UEVR_UObjectHook.get_objects_by_class(bcls, false) end, {}) or {}) do
+                local bn = name_of(b)
+                local s, e = bn:find(key, 1, true)
+                if s and not bn:sub(e + 1):find("%.") and try(function() return b:IsVisible() end, false) == true then
+                    n = n + 1
+                    if n <= 20 then
+                        local g = try(function() return b:GetCachedGeometry() end, nil)
+                        local tl = g and try(function() return sbl:LocalToAbsolute(g, vec2(0, 0)) end, nil) or nil
+                        local size = g and try(function() return sbl:GetAbsoluteSize(g) end, nil) or nil
+                        if size and (size.X or 0) > 0 then nonzero = true end
+                        table.insert(lines, "  geometry: " .. bn:sub(e + 1) .. " absolute top-left " .. v2s(tl) .. " size " .. v2s(size))
+                    end
+                end
+            end
+            if nonzero then  -- laid out: log once; otherwise retry next second
+                geom_logged[wn] = true
+                for _, l in ipairs(lines) do log(l) end
+                log("  geometry: " .. inst .. ": " .. n .. " visible direct button(s)")
+            end
+        end
+    end
+end
+
 -- Menu state ---------------------------------------------------------------------------------------------
 local last_world, last_target = nil, nil
 local in_menu = false
@@ -451,13 +500,14 @@ local function tick()
         log_widgets()
     end
 
-    -- Flat-menu worlds: the main menu and the start-up level with the OMEGA WARNING screen (preLoad; the
-    -- pointer is only active in 2D mode, so the warning screen needs it too: live session 2026-11-27 02:36).
-    -- menu_map_pattern (one Lua pattern) replaces the list if set.
+    -- Flat-menu worlds: the main menu only. preLoad (OMEGA WARNING) was added 2026-11-27 and removed again the
+    -- same night: with the 2D screen on there, a click on Proceed's desktop position quit the game (controls
+    -- thread, 02:40 and 02:45), so the 2D mode changes where widgets sit relative to desktop pixels. Not
+    -- re-added until that mapping is understood. menu_map_pattern (one Lua pattern) replaces the list if set.
     local wl = wname:lower()
     local menu_now = false
     local custom = setting_str("menu_map_pattern", nil)
-    for _, pat in ipairs(custom and { custom:lower() } or { "/game/menu%.menu", "/game/maps/preload%.preload" }) do
+    for _, pat in ipairs(custom and { custom:lower() } or { "/game/menu%.menu" }) do
         if wl:find(pat) ~= nil then menu_now = true end
     end
     if menu_now ~= in_menu then
@@ -480,6 +530,11 @@ local function tick()
         twod_applied = want2d
     end
     check_dot_host(want2d)
+    do
+        local engine = try(function() return api:get_engine() end, nil)
+        local world = try(function() return engine.GameViewport.World end, nil)
+        if menu_now or wl:find("preload", 1, true) then pcall(log_menu_geometry, world) end
+    end
 
     -- Hide the configured menu children until every name is found; give up after 10 scans (logged), since
     -- each scan walks every UMG widget in memory.

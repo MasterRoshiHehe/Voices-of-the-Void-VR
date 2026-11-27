@@ -77,6 +77,13 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 ## Log
 
+### 2026-11-27 Claude (menu thread): preLoad removed from the 2D list (Proceed click quit the game); geometry probe
+
+- Controls thread: with our 2D screen on the preLoad warning screen, a click at Proceed's flat-mode desktop position (1549,1066 of 2560x1440, DPI-aware SendInput) quit the game at 02:45:37 (run `logs\2026-11-27_02-44-36`), and the user's pointer clicks at 02:40 did the same. **Hazard removed:** `votv_menu_camera.lua` turns 2D on in `/Game/menu.menu` only again (repo copy; takes effect at the next launch's sync, the running session was untouched).
+- What the logs show: UEVR runs a 5528x2940 double-wide eye swapchain (`[VR] Width: 5528`, `Height: 2940`) and later reports height 1440 (UI). They don't show the game's viewport size or widget positions, so whether 2D mode re-lays out the UMG (other viewport size/aspect) or remaps window pixels to the viewport is not proven yet. Note: the main menu was used successfully with the physical mouse while looking at the monitor, so in 2D mode the monitor picture and mouse input agree; it's the flat-mode coordinates that are wrong in 2D mode.
+- **Probe added (log only)**: on the menu and preLoad worlds, once the widgets are laid out: viewport size and DPI scale (`WidgetLayoutLibrary`), mouse in viewport and platform coordinates, and every visible direct Button of `ui_menu_C` / `ui_disclaimer_C` with its absolute (desktop) top-left and size (`SlateBlueprintLibrary.LocalToAbsolute` / `GetAbsoluteSize` on the cached geometry). That gives Proceed/Quit and the main-menu buttons in the coordinates the pointer clicks in. The pointer's UV-to-pixel map is then fixed against it; until then the green UMG dot (drawn at the game's own mouse position) shows the true click spot.
+- Rule noted: never auto-click through menus on the user's screen (calibration keeps clicks off; the pointer clicks only on the user's trigger).
+
 ### 2026-11-27 Claude (menu thread): green game-drawn cursor dot (UMG) + red D3D dot, both live-switchable
 
 - **Green UMG dot** (in `votv_menu_camera.lua`): while the flat menu is shown, a 14 px Image widget is spawned (`GameplayStatics.SpawnObject`) into the visible menu widget's root CanvasPanel (`ui_menu_C` in the main menu, `ui_disclaimer_C` on the warning screen), HitTestInvisible, z-order 10000, and moved every frame to `WidgetLayoutLibrary.GetMousePositionOnViewport`. It is part of the game's UI, so it is on UEVR's 2D screen by construction, and it sits where the game thinks the mouse is, so it shows exactly where a click lands. Removed when leaving the flat menu. Stub-tested (attach, follow the mouse position, switch off, remove); real UMG calls untested.
