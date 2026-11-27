@@ -157,7 +157,10 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
     local ok, err = pcall(function()
         local pawn = api:get_local_pawn(0)
         if pawn == nil or not pawn:get_full_name():find("mainPlayer") then return end
-        if pawn ~= st.pawn then setup(pawn) end
+        if pawn ~= st.pawn or not UEVR_UObjectHook.exists(st.pawn) then setup(pawn) end
+        -- drop references to anything destroyed (level change, respawn) before using it
+        local function gone(o) return o ~= nil and not UEVR_UObjectHook.exists(o) end
+        if gone(st.light) or gone(st.torch) or gone(st.hands[0]) or gone(st.hands[1]) then setup(pawn) end
         st.t = st.t + delta
         -- calibrate each hand copy on the first tick after UEVR placed it
         for side = 0, 1 do
