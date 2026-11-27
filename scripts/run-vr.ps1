@@ -40,6 +40,7 @@ param(
     [switch]$ResetProfile,
     [switch]$NoInject,                         # flat run with the same launch path, for A/B
     [switch]$Controls,                         # install the motion-controller plugin (votv_controls.dll) for this run (opt-in while under test)
+    [switch]$Marks,                            # install the marks plugin (votv_marks.dll: left grip + right stick click or F8 drops a mark into <repo>\marks\); opt-in until its first in-game check passes
     [switch]$DryRun                            # run every pre-launch check and fix, then stop without launching
 )
 
@@ -76,6 +77,17 @@ function Set-InjectorRadio([bool]$xr) {
     }
     $name = if ($xr) { 'OpenXR' } else { 'OpenVR' }
     if ($changed) { $x.Save($injCfg); Write-RunLog "injector radio set to $name" } else { Write-RunLog "injector radio already $name" }
+}
+
+function Set-ProfileKey([string]$key, [string]$want) {
+    $t = [System.IO.File]::ReadAllText($profCfg)
+    $re = '(?m)^' + [regex]::Escape($key) + '=(.*)$'
+    if ($t -match $re) {
+        if ($Matches[1].Trim() -eq $want) { return }
+        $t = [regex]::Replace($t, $re, "$key=$want")
+    } else { $t = $t.TrimEnd() + "`r`n$key=$want`r`n" }
+    [System.IO.File]::WriteAllText($profCfg, $t)
+    Write-RunLog "profile $key set to $want"
 }
 
 function Set-ProfileRuntime([string]$want) {
@@ -219,6 +231,9 @@ try {
         Copy-Item $ctlDll $ctlDst -Force
         Write-RunLog "controls plugin installed: votv_controls.dll sha256 $((Get-FileHash $ctlDll -Algorithm SHA256).Hash.Substring(0,12))"
     } else { Write-RunLog "controls plugin: not installed ($(if (-not $Controls) { 'no -Controls' } else { 'not built' }))" }
+    # Marks plugin (mark thread): screenshot + state JSON on a button, into <repo>\marks\. This run only.
+    . (Join-Path $scriptDir 'marks.ps1')
+    if (-not $Marks) { Remove-MarksPlugin $profileDir; Write-RunLog 'marks plugin: not installed (no -Marks)' } else { Install-MarksPlugin $profileDir ${function:Write-RunLog} }
     # Runtime: the repo baseline is the source of truth (the injector rewrites the AppData copy).
     # -Runtime OpenVR is a per-run override (SteamVR parallel test); the default stays OpenXR and
     # is restored in the finally block.
@@ -227,6 +242,10 @@ try {
     $wantRt = if ($Runtime -eq 'OpenVR') { 'openvr_api.dll' } else { 'openxr_loader.dll' }
     $wantXr = ($wantRt -eq 'openxr_loader.dll')
     Set-ProfileRuntime $wantRt
+    # UEVR's own menu stays closed at start (user 2026-11-27 02:11: "if I need it I will open it myself").
+    # UEVR only honours MenuOpen=false when RememberMenuState is on, and it saves MenuOpen on exit, so set both every run.
+    Set-ProfileKey 'FrameworkConfig_RememberMenuState' 'true'
+    Set-ProfileKey 'FrameworkConfig_MenuOpen' 'false'
     Write-RunLog "runtime wanted: $wantRt (-Runtime $Runtime; baseline $baseRt)"
 
     # The injector writes its OpenXR/OpenVR radio button into the profile at injection. Its saved radio
@@ -385,6 +404,8 @@ finally {
     if (Test-Path $ctlTrace) { Move-Item $ctlTrace (Join-Path $runDir 'votv_controls_trace.txt') -Force -ErrorAction SilentlyContinue }
     $ctlDst2 = Join-Path $profileDir 'plugins\votv_controls.dll'
     if (Test-Path $ctlDst2) { Remove-Item $ctlDst2 -Force -ErrorAction SilentlyContinue }
+    $mkDst = Join-Path $profileDir 'plugins\votv_marks.dll'
+    if (Test-Path $mkDst) { Remove-Item $mkDst -Force -ErrorAction SilentlyContinue }
     foreach ($f in @('log.txt', 'config.txt', 'cameras.txt', 'imgui.ini')) {
         $src = Join-Path $profileDir $f
         # log.txt only if UEVR wrote it during this run (else it is an older run's log: false PASS risk).

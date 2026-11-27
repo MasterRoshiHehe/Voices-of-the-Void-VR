@@ -79,7 +79,7 @@ so every context (on foot, ATV) behaves as on the keyboard and a rebind in the g
 | Right grip | E (`use`; ATV `atv_use`) | grab / pick up / interact; hold = carry |
 | A | Space (`Jump`; ATV brake) | |
 | B | R (`Drop`) | press and hold keep their different meanings (place vs to inventory) |
-| Right stick left/right | snap turn 45° (existing UEVR setting) | one turn per push |
+| Right stick left/right | smooth turn, up to 120°/s (`ctl_turn_speed`) | user hates snap turn (2026-11-27); snap stays an option (`ctl_snap_turn=1`) |
 | Right stick up/down | mouse wheel (`scrollUp/Down`) | whatever the wheel does in game |
 | Right stick click | F (`flashlight`; ATV lights) | |
 | Left stick | W/A/S/D (move; ATV drive) | digital (the game has no analog walk) |
@@ -95,6 +95,7 @@ so every context (on foot, ATV) behaves as on the keyboard and a rebind in the g
 | Left grip + B | T (`offhand`) | |
 | Left grip + X | G (`highlightNearby`) | |
 | Left grip + Y | X (`Zoom`; ATV zoom) | held while held |
+| Left grip + right stick click | **mark** (debug, mod; nothing sent to the game) | see "Marks" below; the stick click must come while the grip is held (click first, then grip = flashlight only) |
 
 Left on the keyboard for now: hotbar 1-0 (wheel cycles if the game does), quicksave F5, `ragdoll`
 C, `Down`/`spawnmenu` Q, `noclip`, debug keys, and all computer screens.
@@ -195,6 +196,33 @@ buttons (the game's buttons are E-use; pointing + grip already works), haptics (
 Button mapping stays as §2 at every rung; only `rotate` (RMB) and the mouse wheel become optional
 once rung 3 works. Rungs 2-6 need UE4SS next to UEVR in the same process (not yet run together) and
 a live check that a UE4SS post-hook can rewrite `arm()`'s out params; fallback is a C++ UEVR plugin.
+
+## Marks (debug bookmarks, added 2026-11-27, mark thread)
+
+Port of the Sims 4 project's marks (VR-MOD-HANDOFF.md §12.3): one button drops a screenshot plus a
+state file, so the player only says what they saw and the agent finds the moment.
+
+- **Button:** hold **left grip** (the second layer), then **click the right stick**. Mirrored with
+  `ctl_left_handed=1` (right grip + left stick click). Keyboard: **F8** (free in the game's Input.ini,
+  2026-11-27), only while the game window has focus. At most one mark per second (`mark_min_interval_ms`).
+  The chord is read from UEVR's own actions (`Grip`, `JoystickClick`), so it works however the controls
+  plugin treats XInput; the controls plugin maps layer + right stick click to `mark`, which has no key,
+  so the game receives nothing (no flashlight toggle in the screenshot).
+- **Output:** `<repo>\marks\<yyyy-MM-dd_HH-mm-ss_mmm>\` (gitignored): `mark.json` (time, trigger,
+  runtime, world, pawn, view location/rotation, the game's `lookAtActor` and `grabbing_actor`, a
+  Visibility line trace from the view and one from the camera-manager actor (= the hand when
+  `votv_hand_aim.lua` is on) with hit actor/component/bone/distance, HMD and both controllers' grip and
+  aim poses in UEVR standing space, key UEVR settings, screenshot result), `mirror.jpg` (the game's
+  desktop window via PrintWindow: UEVR's flat mirror), and on SteamVR runs `eye*` files from
+  `openvr_mirror_capture snap 1` (both eyes). OpenXR via VD has no compositor mirror, so there it is the
+  desktop view only. UEVR log line: `[votv-mark] Mark: saved <dir> | local <time> | <trigger> | world ... | look_at ... | gaze ...`.
+- **Note (optional):** `scripts\marks.ps1 -Note "text"` adds `note.txt` to the newest mark (or `-Mark <id>`).
+  Test mailbox: a file `votv_mark_request.txt` in the UEVR profile folder requests a mark; its text is the note.
+- **Run summary:** `check-run.ps1` lists the run's marks above the VERDICT line and writes
+  `<run>\marks.txt` and `<run>\mark_log_context.txt` (UEVR log 7 s before to 3 s after each mark).
+- **Install:** `scripts\build-marks.ps1`, then `run-vr.ps1 -Marks` (opt-in until its first in-game check).
+  Settings: `profile\VotV-Win64-Shipping\scripts\votv_marks.txt` (live). No in-headset confirmation yet
+  (UEVR 1.05 has no overlay API for plugins outside its menu); haptics off.
 
 ## Prompts
 

@@ -1,0 +1,12 @@
+# VOTV VR marks (votv_marks.dll). Live: re-read within a second of saving. See CONTROLS.md "Marks".
+mark_enabled=1
+# hold left grip + click right stick (mirrored when ctl_left_handed=1)
+mark_chord=1
+# keyboard key (Windows virtual-key code; 0x77 = 119 = F8; 0 = off). Only while the game window has focus.
+mark_key_vk=119
+mark_min_interval_ms=1000
+mark_trace_cm=2000
+mark_jpeg_quality=90
+# Empty = <UEVR profile>\marks. run-vr.ps1 fills these in the deployed copy (dev folder marks\, mirror tool).
+mark_dir=
+mark_mirror_exe=

@@ -79,3 +79,6 @@ __pycache__/
 .vscode/
 Thumbs.db
 desktop.ini
+
+# In-headset debug marks (screenshots + state JSON from votv_marks.dll)
+marks/
