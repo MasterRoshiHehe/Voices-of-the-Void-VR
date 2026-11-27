@@ -38,6 +38,7 @@ param(
     [switch]$LeaveSteamVR,                     # SteamVR runs: keep SteamVR open afterwards (default: close it if this run started it)
     [switch]$ResetProfile,
     [switch]$NoInject,                         # flat run with the same launch path, for A/B
+    [switch]$Controls,                         # install the motion-controller plugin (votv_controls.dll) for this run (opt-in while under test)
     [switch]$DryRun                            # run every pre-launch check and fix, then stop without launching
 )
 
@@ -184,9 +185,26 @@ try {
     if (Test-Path $repoScripts) {
         $dstScripts = Join-Path $profileDir 'scripts'
         New-Item -ItemType Directory -Force $dstScripts | Out-Null
-        $synced = Get-ChildItem $repoScripts -File | ForEach-Object { Copy-Item $_.FullName (Join-Path $dstScripts $_.Name) -Force; $_.Name }
+        # Recursive (subfolders such as scripts\votv\ hold require() modules; UEVR only auto-runs top-level .lua).
+        $synced = Get-ChildItem $repoScripts -File -Recurse | ForEach-Object {
+            $rel = $_.FullName.Substring($repoScripts.Length).TrimStart('\')
+            $dst = Join-Path $dstScripts $rel
+            New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
+            Copy-Item $_.FullName $dst -Force
+            $rel
+        }
         Write-RunLog "UEVR scripts synced: $($synced -join ', ')"
     }
+    # Motion-controller plugin (controls thread): build/votv_controls/votv_controls.dll -> profile plugins folder,
+    # this run only (removed again in the finally block). Opt-in with -Controls while it is under test, so other threads' runs stay unchanged.
+    $ctlDll = Join-Path $repo 'build\votv_controls\votv_controls.dll'
+    $ctlDst = Join-Path $profileDir 'plugins\votv_controls.dll'
+    if (Test-Path $ctlDst) { Remove-Item $ctlDst -Force -ErrorAction SilentlyContinue }
+    if ($Controls -and (Test-Path $ctlDll)) {
+        New-Item -ItemType Directory -Force (Split-Path $ctlDst) | Out-Null
+        Copy-Item $ctlDll $ctlDst -Force
+        Write-RunLog "controls plugin installed: votv_controls.dll sha256 $((Get-FileHash $ctlDll -Algorithm SHA256).Hash.Substring(0,12))"
+    } else { Write-RunLog "controls plugin: not installed ($(if (-not $Controls) { 'no -Controls' } else { 'not built' }))" }
     # Runtime: the repo baseline is the source of truth (the injector rewrites the AppData copy).
     # -Runtime OpenVR is a per-run override (SteamVR parallel test); the default stays OpenXR and
     # is restored in the finally block.
@@ -331,6 +349,11 @@ finally {
     }
     Get-Process -Name 'UEVRInjector' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
+    # Controls plugin: the run's trace goes with the logs; the DLL leaves the profile with the run.
+    $ctlTrace = Join-Path $profileDir 'votv_controls_trace.txt'
+    if (Test-Path $ctlTrace) { Move-Item $ctlTrace (Join-Path $runDir 'votv_controls_trace.txt') -Force -ErrorAction SilentlyContinue }
+    $ctlDst2 = Join-Path $profileDir 'plugins\votv_controls.dll'
+    if (Test-Path $ctlDst2) { Remove-Item $ctlDst2 -Force -ErrorAction SilentlyContinue }
     foreach ($f in @('log.txt', 'config.txt', 'cameras.txt', 'imgui.ini')) {
         $src = Join-Path $profileDir $f
         if (Test-Path $src) { Copy-Item $src (Join-Path $runDir ("uevr_" + $f)) -Force }
