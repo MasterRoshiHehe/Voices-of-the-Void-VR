@@ -99,6 +99,7 @@ public:
         if (t - settings_check_t_ > 1000) { settings_check_t_ = t; load_settings(false); poll_driver_file(); }
 
         if (t - uevr_check_t_ > 1000) { uevr_check_t_ = t; enforce_uevr_values(); }
+        if (t - cfg_sent_t_ > 2000) { cfg_sent_t_ = t; API::get()->dispatch_lua_event("votv_cfg", settings_text_.c_str()); }
 
         votv::PadState p;
         double pad_t;
@@ -153,7 +154,8 @@ private:
     std::ofstream trace_;
     std::mutex pad_mtx_;
     votv::PadState pad_{};
-    double pad_t_{0}, settings_check_t_{0}, uevr_check_t_{0};
+    double pad_t_{0}, settings_check_t_{0}, uevr_check_t_{0}, cfg_sent_t_{0};
+    std::string settings_text_;   // forwarded to the Lua scripts (no file access in UEVR 1.05 Lua)
     bool layer_on_{false}, turning_{false};
     double turn_t_{0};
     float turn_speed_{120}, turn_deadzone_{0.2f}, yaw_scale_{2.5f};
@@ -213,6 +215,8 @@ private:
         if (!first && (ec || mt == settings_mtime_)) return;
         settings_mtime_ = mt;
         std::string text = read_file(p);
+        settings_text_ = text;
+        cfg_sent_t_ = 0;
         auto num = [&](const char* key, float def) {
             auto pos = text.find(std::string(key) + "=");
             return pos == std::string::npos ? def : (float)atof(text.c_str() + pos + strlen(key) + 1);
@@ -237,7 +241,7 @@ private:
         turn_deadzone_ = std::clamp(num("ctl_turn_deadzone", turn_deadzone_), 0.f, 0.9f);
         yaw_scale_ = std::max(0.01f, num("ctl_yaw_scale", yaw_scale_));
         turn_method_ = (int)num("ctl_turn_method", 0);
-        int aim = (int)num("ctl_aim_method", 2);   // UEVR enum: 0 game, 1 head, 2 right controller, 3 left
+        int aim = (int)num("ctl_aim_method", 1);   // UEVR enum: 0 game, 1 head, 2 right controller, 3 left; hand ray: votv_hand_aim.lua
         if (s.left_handed && aim == 2) aim = 3;
         if (aim >= 0 && aim <= 5) aim_method_ = aim;
         // Applied (and re-applied) by enforce_uevr_values: UEVR loads the profile config *after* plugins

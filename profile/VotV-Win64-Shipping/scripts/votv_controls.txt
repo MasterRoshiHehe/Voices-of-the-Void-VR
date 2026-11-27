@@ -1,6 +1,9 @@
 ctl_enabled=1
 ctl_left_handed=0
-ctl_aim_method=2
+ctl_aim_method=1
+hand_aim=1
+hand_arms=0
+hand_log_s=2
 ctl_snap_turn=0
 ctl_turn_speed=120
 ctl_turn_deadzone=0.2
