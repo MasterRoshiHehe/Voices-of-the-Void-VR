@@ -161,7 +161,35 @@ Proposed ladder, one rung per build, each with its own check; the user picks how
 | 5. Physical throw | let go while swinging to throw | on release, set the dropped prop's velocity from the hand's last ~100 ms (Lua) | prop speed ≈ hand speed |
 | 6. Near grab, off hand | grab what the hand touches; left hand holds the offhand item | sphere overlap at the hand instead of a ray; left-hand `arm()`/`weapon_off` | grab without pointing works; no grab through walls |
 
-Not planned unless asked: arm IK/finger tracking (hide the arms instead), physical levers and
+### Using the player character's own hands (user asked 2026-11-27 00:11)
+
+Read from the pak (2026-11-27; reports in `F:\Moddings\VOTV\dumps\reports_fparms.txt`, outside the repo):
+
+- First-person arms = `arms` / `arms_off` on the pawn, mesh `FP_arms` with skeleton `FP_arms_Skeleton`.
+  Bones per side: `shoulder`, `upperarm`, `forearm`, `hand`, `weapon` (item socket), plus
+  `IK_hand` and `armPole` helper bones. **No finger bones**, so the hands keep one fixed pose; no
+  finger curl from grip/trigger is possible without new art.
+- Its anim Blueprint `FP_arms_Skeleton_AnimBlueprint_C` is only a montage slot to output (no IK
+  node). The arms just play per-tool montages (crowbar, shovel, mop, fire extinguisher, digital map,
+  metal detector, rake, ritual knife, suitcase, sponge). So the game does no arm IK we could steer;
+  we'd pose the bones ourselves.
+- Third-person body: `playermodel` / `mesh_playerVisible` (owner-no-see, used for shadows/ragdoll);
+  skeleton not read yet.
+
+Options, cheapest first:
+
+| Option | Looks like | How | Cost / risk |
+|---|---|---|---|
+| H1. Rigid arms on the hand | the game's arm+hand mesh moves with the controller; forearm follows rigidly | UObjectHook attach `arms` to the right controller (and `arms_off` left), offset so `hand` sits at the grip | Cheap (profile only). Forearm can poke out at odd wrist angles; tool montages still play on top |
+| H2. Hand-only look | only the hand/glove is shown at the controller | H1 plus hide/shrink `upperarm`/`shoulder` (bone scale via a poseable copy) or a near clip | Medium; avoids the floating forearm |
+| H3. Two-bone IK arms | shoulder fixed near the camera, hand at the controller, elbow bends naturally | spawn a `PoseableMeshComponent` with `FP_arms`, copy the montage pose each tick, then set `upperarm`/`forearm`/`hand` from our own two-bone IK in Lua (`armPole` bone gives the elbow direction) | Most immersive; per-tick Lua cost, needs UE4SS/UEVR side by side; montages for tool swings would need blending |
+| H4. Full body | the third-person body follows head and hands | IK on `playermodel`, hide its head | Large; not recommended now |
+
+Recommendation: H1 at rung 4 (tools in the hand already uses the same attachment), then H3 if the
+user wants elbows. Unknowns to check live: whether the arms are visible at all while carrying
+plain props (the montages suggest arms show only with tools), and the arms' FOV/scale under UEVR.
+
+Not planned unless asked: finger tracking (hide the arms instead), physical levers and
 buttons (the game's buttons are E-use; pointing + grip already works), haptics (off by default).
 
 Button mapping stays as §2 at every rung; only `rotate` (RMB) and the mouse wheel become optional
