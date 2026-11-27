@@ -15,9 +15,7 @@ session (or the other agent) picks up the work.
 - Publisher guidance and chosen scope: [dated sources in RESEARCH.md; user decision and unknowns]
 - Launch for testing: `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
-- Who owns the game install right now: nobody (controls thread released it 2026-11-27 02:31 after the self-check run). Next: user Test-Controls retest.
-- Who owns the game install right now: nobody (menu thread released it 2026-11-27 02:16 after the flat click test). Next in queue: runtime thread (UEVR nightly quit-crash A/B), then controls retest.
-- Who owns the game install right now: nobody (runtime thread released it 2026-11-27 02:23 after the nightly A/B; controls retest next)
+- Who owns the game install right now: **controls thread, live session with the user** (from 2026-11-27 02:38, -Controls -Pointer)
 
 ## Rendering compatibility
 
@@ -48,6 +46,7 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 ## Waiting on the human
 
+- [ ] **Mark test (next live VR run, any launcher; marks plugin now installs by default):** hold left grip + click right stick once (feel a buzz), then press F8 once.
 - [ ] Agree the plan in RESEARCH.md (UEVR + profile/Lua, UE4SS helpers)
 - [ ] Confirm hardware is the Sims rig: Quest 3 via Virtual Desktop, RTX 4080 Super
 - [x] Intended experience (2026-11-26), staged one step at a time: A) head tracking + gamepad, HUD on a floating panel (FIRST); then B) motion controllers with hand aiming; then maybe C) full hands-on interaction. HUD/menu placement details still open.
@@ -78,6 +77,25 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 ## Log
 
+### 2026-11-27 Claude (menu thread): pointer live result (controls session 02:36) and fixes for the next session
+
+- Pointer plugin loaded and went active in the main menu (`active (2D screen, right hand)`, HMD forward (-0.05 0.45 -0.89) at activation, so -Z forward / +Y up as assumed). Hits tracked the hand (`hit u 0.484 v 0.557 -> client 1239,802 of 2560x1440 (ray 1.75 m)`), trigger pulls went out as clicks (6 between 02:37:23 and :25). The OS cursor followed the hand (user saw the dot under the cursor on the PC monitor).
+- **The dot did not reach the headset**: it was drawn into the game's backbuffer at Present, and UEVR's 2D screen doesn't show the final backbuffer. Fix built (not yet live): the dot is now also drawn into the texture UEVR passes to `on_post_render_vr_framework_dx11` (its framework layer, composited into the headset view); size logged once; `ptr_dot_desktop` / `ptr_dot_framework` / `ptr_dot_framework_scale` in `scripts\votv_pointer.txt` (live). Whether that texture shows in the headset and how its coordinates map to the 2D screen is to be checked live. If it doesn't, next candidates: a UMG image widget the game draws (then it is in the 2D screen for sure).
+- At 02:37:28 the pointer went inactive: "game not focused" (the Claude window had focus on the PC). Pointer and controls both need the game window focused.
+- OMEGA WARNING screen is in `/Game/maps/preLoad`, which had no 2D mode, so no pointer there. Fixed in `votv_menu_camera.lua` (not live): 2D mode in the main menu **and** preLoad (`menu_map_pattern` unset in settings.lua; setting it to one pattern overrides the list). Stub run: preLoad 2D on, menu on, gameplay off.
+- Both changes take effect on the next launch (scripts sync, `-Pointer` copies the new DLL). Rebuilt DLL: pointer_test 12/12 PASS.
+
+### 2026-11-27 Claude (repo thread): STATUS.md duplication fixed
+
+- Cause: `git-feature.ps1` merged on-disk edits with line-ending-converted (CRLF) copies while agents write LF, so every line differed and the union merge kept the whole file twice; union merges also triplicated the install-lock line and one runtime entry. Fixed on disk and in dev: one copy kept (the one with the newest edits: lock line, mark test item, mark entry), the repeated runtime entry and extra lock lines removed; no entry lost (diffed both copies against dev).
+- Prevention: the script now merges LF-only, and refuses any union result that repeats a line or leaves more than one install-lock line (stops, changes nothing). Tested on a scratch repo: diverged sync with LF disk edits merges cleanly; both sides changing the lock line stops.
+
+### 2026-11-27 Claude (mark thread): marks installed on every VR run, buzz on save
+
+- Cause of "no indication" on the 02:30 Test-Controls run: votv_marks.dll was opt-in (`-Marks`), and Test-Controls.bat doesn't pass it (run.txt: `marks plugin: not installed (no -Marks)`; no marks folder, no `[votv-mark]` lines). Now `run-vr.ps1` installs it on every injected run (`-NoMarks` to leave it out), so Test-Controls.bat is unchanged.
+- Feedback: one 60 ms pulse on the stick-click hand when a mark is saved, two when it failed (user exception 2026-11-27: vibration for mark confirmation only; `mark_haptic=0` turns it off). Sound dropped (not trivial: no known sound asset). Build: mark_logic_test 15/15 PASS. Not yet run in game; verification after the next live run (step in "Waiting on the human").
+- Note: STATUS.md currently holds its whole content twice (second copy from line ~475); left as is for the repo thread.
+
 ### 2026-11-27 Claude (menu thread): laser pointer plugin v1 built (votv_pointer.dll), ready to test with -Pointer
 
 - User 01:29 (run 02:23): "the main menu still followed my view on the x axis but not the y axis and I still have no way to navigate the menu". So UEVR's 2D screen follows head yaw only. Pointer first (it makes the menu usable at all), pin the screen after.
@@ -100,11 +118,7 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 - **Nightly A/B:** UEVR nightly-01143 (github.com/praydog/UEVR-nightly, published 2026-08-30, `uevr.zip` SHA-256 4cd6932d...c6d8 = release digest, user OK 02:10) in `tools\UEVR\nightly-01143\UEVR\` (not in git). Its injector got its own saved settings with OpenXR selected (`UEVRInjector_Path_m212kktlfdwucst4chyfcs0ykmee4tad`; the injector first shows a "VD Warning" dialog, dismissed via UI Automation). Run `logs\2026-11-27_02-20-07` (`-UevrDir <nightly> -InjectorSettingsDir <that> -Feature quit-crash-nightly -MaxRunMinutes 2`): OpenXR on Quest 3 PASS, DX11, no SteamVR. **Same quit crash** (win-crash FAIL 02:22:39, 0xc0000409 at ...c28f). So 1.05 vs nightly makes no difference, and the crash isn't fixed by a newer UEVR. Stay on 1.05. Remaining ideas: report it to Virtual Desktop (crash in its runtime's LibOVRRT code at process exit), or accept it as a known exit-only crash if nothing is lost at quit (asked the user).
 - **UEVR menu closed at start** (user 02:11: "please stop that UEVR menu from being displayed whenever I start the game"): UEVR applies `FrameworkConfig_MenuOpen=false` only when `FrameworkConfig_RememberMenuState=true` (inferred: the baseline had MenuOpen=false with Remember=false and the menu still opened). `run-vr.ps1` sets both every run (new `Set-ProfileKey`) in the shared AppData profile, so 1.05 and nightly on both runtimes are covered; the repo baseline now has RememberMenuState=true. Run 02:20: no UEVR menu on the desktop window 25 s after injection (`window_menu_check.png`, `scripts\snap-window.ps1`), but there's no picture of the menu open to compare against, so the user's headset look is the real check.
 - `check-run.ps1`: `vulkan-1.dll` is loaded even on DX11 runs (02:10 run), so the `vulkan` check now FAILs only when no DirectX hook was seen.
-### 2026-11-27 Claude (runtime thread): UEVR nightly doesn't fix the quit crash; UEVR menu closed at start
 
-- **Nightly A/B:** UEVR nightly-01143 (github.com/praydog/UEVR-nightly, published 2026-08-30, `uevr.zip` SHA-256 4cd6932d...c6d8 = release digest, user OK 02:10) in `tools\UEVR\nightly-01143\UEVR\` (not in git). Its injector got its own saved settings with OpenXR selected (`UEVRInjector_Path_m212kktlfdwucst4chyfcs0ykmee4tad`; the injector first shows a "VD Warning" dialog, dismissed via UI Automation). Run `logs\2026-11-27_02-20-07` (`-UevrDir <nightly> -InjectorSettingsDir <that> -Feature quit-crash-nightly -MaxRunMinutes 2`): OpenXR on Quest 3 PASS, DX11, no SteamVR. **Same quit crash** (win-crash FAIL 02:22:39, 0xc0000409 at ...c28f). So 1.05 vs nightly makes no difference, and the crash isn't fixed by a newer UEVR. Stay on 1.05. Remaining ideas: report it to Virtual Desktop (crash in its runtime's LibOVRRT code at process exit), or accept it as a known exit-only crash if nothing is lost at quit (asked the user).
-- **UEVR menu closed at start** (user 02:11: "please stop that UEVR menu from being displayed whenever I start the game"): UEVR applies `FrameworkConfig_MenuOpen=false` only when `FrameworkConfig_RememberMenuState=true` (inferred: the baseline had MenuOpen=false with Remember=false and the menu still opened). `run-vr.ps1` sets both every run (new `Set-ProfileKey`) in the shared AppData profile, so 1.05 and nightly on both runtimes are covered; the repo baseline now has RememberMenuState=true. Run 02:20: no UEVR menu on the desktop window 25 s after injection (`window_menu_check.png`, `scripts\snap-window.ps1`), but there's no picture of the menu open to compare against, so the user's headset look is the real check.
-- `check-run.ps1`: `vulkan-1.dll` is loaded even on DX11 runs (02:10 run), so the `vulkan` check now FAILs only when no DirectX hook was seen.
 ### 2026-11-27 Claude (mark thread): in-headset marks built, not yet run in game
 
 - New, separate UEVR plugin `src/votv_marks/` -> `build\votv_marks\votv_marks.dll` (`scripts\build-marks.ps1`; offline test `mark_logic_test` 15/15 PASS). Button: **left grip + right stick click** (mirrored when left-handed), or **F8**. Writes `<repo>\marks\<yyyy-MM-dd_HH-mm-ss_mmm>\mark.json` + `mirror.jpg` (+ both eyes via the mirror tool on SteamVR runs). Design and fields: CONTROLS.md "Marks". `marks/` gitignored.
