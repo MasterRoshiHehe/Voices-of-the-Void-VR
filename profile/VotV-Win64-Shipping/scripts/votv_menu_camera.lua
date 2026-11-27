@@ -203,6 +203,28 @@ local function log_widget_tree(w)
     log("  resources: " .. table.concat(rp, " ; "))
 end
 
+-- UFunction probe (diagnostics only): Blueprint functions of the menu-type widget classes, to find what a
+-- button click calls (e.g. "BndEvt__button_start_..._OnClicked", "proceed"). Injected OS mouse clicks did
+-- not press "Proceed" on the OMEGA WARNING screen (controls thread, 2026-11-27), so the laser pointer may
+-- need to call these directly. Logged once per class per session.
+local funcs_logged = {}
+local function log_class_functions(class_short)
+    if funcs_logged[class_short] then return end
+    funcs_logged[class_short] = true
+    local fcls = try(function() return api:find_uobject("Class /Script/CoreUObject.Function") end, nil)
+    if fcls == nil then log("  functions: Function class not found"); return end
+    local objs = try(function() return UEVR_UObjectHook.get_objects_by_class(fcls, false) end, {}) or {}
+    local key = "." .. class_short .. ":"
+    local names = {}
+    for _, f in ipairs(objs) do
+        local n = name_of(f)
+        local s, e = n:find(key, 1, true)
+        if s ~= nil then table.insert(names, n:sub(e + 1)) end
+    end
+    table.sort(names)
+    log("  functions of " .. class_short .. " (" .. #names .. "): " .. table.concat(names, ", "))
+end
+
 local function log_widgets()
     local cls = try(function() return api:find_uobject("Class /Script/UMG.UserWidget") end, nil)
     if cls == nil then log("  widgets: UserWidget class not found"); return end
@@ -214,6 +236,10 @@ local function log_widgets()
             n = n + 1
             if n <= 30 then
                 log(string.format("  widget %s visible=%s", name_of(w), tostring(try(function() return w:IsVisible() end, "?"))))
+            end
+            if try(function() return w:IsVisible() end, false) == true then
+                local cshort = name_of(w):match("^(%S+)")
+                if cshort then log_class_functions(cshort) end
             end
             if name_of(w):find("ui_menu_C", 1, true) and try(function() return w:IsVisible() end, false) == true then
                 log_widget_tree(w)
