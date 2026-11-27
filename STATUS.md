@@ -15,7 +15,7 @@ session (or the other agent) picks up the work.
 - Publisher guidance and chosen scope: [dated sources in RESEARCH.md; user decision and unknowns]
 - Launch for testing: `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
-- Who owns the game install right now: menu session, profile script cleanup (no launch); claimed 2026-11-27 02:03, deadline 02:15.
+- Who owns the game install right now: nobody (menu session released it 2026-11-27 02:05 after the profile script cleanup)
 
 ## Rendering compatibility
 
@@ -75,6 +75,12 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 | 2026-11-27 00:39:22, 00:47:26, 00:57:09, 01:02:32, 01:07:06, 01:10:38 | same: 0xc0000409 (fail-fast) at 0x7ff82415c28f, module unknown (Application log event 1000) | runs 00:28, 00:43, 00:55, 01:01, 01:05, 01:09 | 5e690d8f, UEVR 1.05, **OpenXR (VDXR) only** | quitting the game, every time | Exit-time crash on UEVR OpenXR shutdown (not Lua: first two runs had no scripts). Gameplay unaffected; saves made before quitting are fine as far as known. Owner: runtime thread. |
 
 ## Log
+
+### 2026-11-27 Claude (menu thread): profile script cleanup (graphics thread suspended)
+
+- Deleted `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\scripts\votv_graphics.lua` (the graphics thread's log-only probe). No `gfx_` keys were left to remove: both the AppData `scripts\votv\settings.lua` and the repo copy (and the committed one on feature/menu-stereo, 891b3b4) hold only `menu_` keys.
+- Sync check: `run-vr.ps1` copies every file under the repo's `profile\VotV-Win64-Shipping\scripts\` (recursive, add/overwrite, never deletes). `votv_graphics.lua` is no longer anywhere in the repo working tree or in git, so the sync won't bring it back. If the graphics thread restores it under that folder, it will be deployed again on the next run.
+- The AppData `votv_menu_camera.lua` already matches the repo (2D main menu active, lock and blur hide off), so the controls thread's next `Test-Controls.bat` run carries the 2D menu check; no separate user run.
 
 ### 2026-11-27 Claude (runtime thread): other mod loaders flagged
 
