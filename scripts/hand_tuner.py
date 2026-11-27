@@ -29,12 +29,7 @@ FINGERS = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
 DEFAULT_PRESETS = {"open": [0.1] * 5, "trigger": [0.1, 0.85, 0.1, 0.1, 0.1], "grip": [0.2, 0.1, 0.9, 0.9, 0.9],
                    "fist": [0.6, 0.9, 0.9, 0.9, 0.9], "thumb_rest": [0.5, 0, 0, 0, 0], "thumb_press": [0.9, 0, 0, 0, 0]}
 SETTINGS = [  # key, label, low, high, resolution
-    ("hands_mcp", "Knuckle bend at full curl (deg)", 0, 130, 1),
-    ("hands_pip", "Middle joint bend (deg)", 0, 130, 1),
-    ("hands_dip_ratio", "Fingertip / middle joint ratio", 0, 1.5, 0.01),
-    ("hands_relax", "Relaxed open hand (0-1)", 0, 0.6, 0.01),
-    ("hands_curl_sign", "Bend direction (+1 / -1)", -1, 1, 2),
-    ("hands_thumb_sign", "Thumb bend direction (+1 / -1)", -1, 1, 2),
+    # finger bend itself comes from the game's Kerfur animations (0 = its open hand, 1 = its fist)
     ("hands_x", "Hand forward (cm)", -25, 25, 0.5), ("hands_y", "Hand sideways (cm)", -25, 25, 0.5),
     ("hands_z", "Hand up (cm)", -25, 25, 0.5), ("hands_pitch", "Hand pitch", -180, 180, 1),
     ("hands_yaw", "Hand yaw", -180, 180, 1), ("hands_roll", "Hand roll", -180, 180, 1),
@@ -116,7 +111,7 @@ class App:
             tk.Scale(f, from_=0, to=1, resolution=0.01, orient="horizontal", length=360, variable=v,
                      command=lambda _v, i=i: self.on_finger(i)).pack(side="left")
 
-        bottom = ttk.LabelFrame(root, text="Bend and hand placement (live)")
+        bottom = ttk.LabelFrame(root, text="Hand placement (live)")
         bottom.pack(fill="x", padx=8, pady=6)
         self.setting_vars = {}
         for key, label, lo, hi, res in SETTINGS:

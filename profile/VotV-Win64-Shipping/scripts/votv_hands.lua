@@ -504,6 +504,52 @@ end
 -- bone's own frame on top of its rest pose (rest captured once after the hand is posed).
 local curls = { [0] = { 0, 0, 0, 0, 0 }, [1] = { 0, 0, 0, 0, 0 } }
 local curl_dirty = false
+-- The game's own finger poses (2026-11-27 20:30): bone-local rotations relative to the reference pose, read by
+-- tools/animread from the Kerfur's animations (open = givePaper frame 12, fist = idle). Lines
+-- "bone ox oy oz ow fx fy fz fw" arrive from the plugin as "votv_game_poses". Curl c slerps open -> fist.
+local game_poses = nil
+pcall(function()
+    uevr.sdk.callbacks.on_lua_event(function(name, data)
+        if name ~= "votv_game_poses" or game_poses ~= nil then return end
+        local gp = {}
+        for line in tostring(data):gmatch("[^\n]+") do
+            local v, bone = {}, line:match("^(%S+)")
+            for n in line:gmatch("%s(%-?[%d%.]+)") do v[#v + 1] = tonumber(n) end
+            if bone and #v == 8 then gp[bone] = { open = { v[1], v[2], v[3], v[4] }, fist = { v[5], v[6], v[7], v[8] } } end
+        end
+        game_poses = gp; st.curl_force = true; curl_dirty = true
+        log("fingers: game poses loaded")
+    end)
+end)
+
+local function slerp(a, b, t)
+    local d = a[1] * b[1] + a[2] * b[2] + a[3] * b[3] + a[4] * b[4]
+    local s = d < 0 and -1 or 1
+    d = math.abs(d)
+    local wa, wb = 1 - t, t
+    if d < 0.9995 then
+        local th = math.acos(d); local sn = math.sin(th)
+        wa, wb = math.sin((1 - t) * th) / sn, math.sin(t * th) / sn
+    end
+    local q = {}
+    for i = 1, 4 do q[i] = wa * a[i] + wb * s * b[i] end
+    local n = math.sqrt(q[1] ^ 2 + q[2] ^ 2 + q[3] ^ 2 + q[4] ^ 2)
+    for i = 1, 4 do q[i] = q[i] / n end
+    return q
+end
+
+local function quat_to_rot(q)   -- FQuat::Rotator()
+    local x, y, z, w = q[1], q[2], q[3], q[4]
+    local sing = z * x - w * y
+    local yaw = math.deg(math.atan(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+    if sing < -0.4999995 then
+        return rot(-90, yaw, -yaw - 2 * math.deg(math.atan(x, w)))
+    elseif sing > 0.4999995 then
+        return rot(90, yaw, yaw - 2 * math.deg(math.atan(x, w)))
+    end
+    return rot(math.deg(math.asin(2 * sing)), yaw, math.deg(math.atan(-2 * (w * x + y * z), 1 - 2 * (x * x + y * y))))
+end
+
 pcall(function()
     uevr.sdk.callbacks.on_lua_event(function(name, data)
         if name ~= "votv_fingers" then return end
@@ -580,6 +626,9 @@ local function apply_fingers(side)
             local parent = comp:GetParentBone(fname(chain[1]))
             if st.finger_rest[key] == nil then   -- rest local transforms, once (the hand is already posed)
                 local rest, pt = {}, comp:GetBoneTransformByName(parent, COMP)
+                for k = 1, 3 do   -- from the reference pose: a re-capture after a curl would stack the curl
+                    pcall(function() comp:ResetBoneTransformByName(fname(chain[k])) end)
+                end
                 for k = 1, 3 do
                     local tk = comp:GetBoneTransformByName(fname(chain[k]), COMP)
                     rest[k] = kml:MakeRelativeTransform(tk, pt)
@@ -600,6 +649,16 @@ local function apply_fingers(side)
             -- (hands_thumb_opp deg on its first joint).
             local thumb = i == 1
             local c = amount[i]
+            if game_poses ~= nil and game_poses[chain[1]] ~= nil then
+                for k = 1, 3 do
+                    local g = game_poses[chain[k]]
+                    local curlT = kml:MakeTransform(vec(0, 0, 0), quat_to_rot(slerp(g.open, g.fist, c)), vec(1, 1, 1))
+                    local newc = kml:ComposeTransforms(kml:ComposeTransforms(curlT, rest[k]), pt)
+                    comp:SetBoneTransformByName(fname(chain[k]), newc, COMP)
+                    pt = newc
+                end
+                return
+            end
             if i == 4 then c = math.min(1, (c ^ 0.85) * 1.1) end
             local e = cfg.hands_relax + (1 - cfg.hands_relax) * c                 -- effective closing 0..1
             local mcp, pip = cfg.hands_mcp * e, cfg.hands_pip * e

@@ -40,8 +40,10 @@ param(
     [switch]$ResetProfile,
     [switch]$NoInject,                         # flat run with the same launch path, for A/B
     [switch]$Controls,                         # install the motion-controller plugin (votv_controls.dll) for this run (opt-in while under test)
+    [switch]$LateInject,                       # start flat (menus via Virtual Desktop's own desktop laser), inject UEVR when F10 is pressed (or -LateInjectAfterSeconds)
+    [int]$LateInjectTimeoutMinutes = 60,       # bound on the wait for F10
     [switch]$Pointer,                          # install the flat-menu laser pointer (votv_pointer.dll, menu thread) for this run (opt-in while under test)
-    [switch]$Marks,                            # install the marks plugin (votv_marks.dll: left grip + right stick click or F8 drops a mark into <repo>\marks\); opt-in until its first in-game check passes
+    [switch]$NoMarks,                          # don't install the marks plugin (votv_marks.dll, on by default: left grip + right stick click or F8 drops a mark into <repo>\marks\; passive until pressed)
     [switch]$DryRun                            # run every pre-launch check and fix, then stop without launching
 )
 
@@ -231,20 +233,25 @@ try {
         New-Item -ItemType Directory -Force (Split-Path $ctlDst) | Out-Null
         Copy-Item $ctlDll $ctlDst -Force
         Write-RunLog "controls plugin installed: votv_controls.dll sha256 $((Get-FileHash $ctlDll -Algorithm SHA256).Hash.Substring(0,12))"
+        # Finger poses read from the game's own Kerfur animations (tools/animread, CUE4Parse); game-derived, so generated here, never committed.
+        $poses = Join-Path $profileDir 'votv_game_hand_poses.txt'; $animread = Join-Path $repo 'tools\animread\bin\Release\net10.0\animread.dll'
+        if (-not (Test-Path $poses) -and (Test-Path $animread)) { & dotnet $animread (Join-Path $gameDir 'VotV\Content\Paks') $poses | Out-Null }
+        Write-RunLog "game finger poses: $(if (Test-Path $poses) { 'present' } else { 'MISSING (fingers use the old bend)' })"
     } else { Write-RunLog "controls plugin: not installed ($(if (-not $Controls) { 'no -Controls' } else { 'not built' }))" }
     # Marks plugin (mark thread): screenshot + state JSON on a button, into <repo>\marks\. This run only.
     . (Join-Path $scriptDir 'marks.ps1')
-    if (-not $Marks) { Remove-MarksPlugin $profileDir; Write-RunLog 'marks plugin: not installed (no -Marks)' } else { Install-MarksPlugin $profileDir ${function:Write-RunLog} }
+    if ($NoMarks -or $NoInject) { Remove-MarksPlugin $profileDir; Write-RunLog "marks plugin: not installed ($(if ($NoMarks) { '-NoMarks' } else { 'flat run' }))" } else { Install-MarksPlugin $profileDir ${function:Write-RunLog} }
     # Flat-menu laser pointer (menu thread): build/votv_pointer/votv_pointer.dll -> profile plugins folder, this run
     # only (removed in the finally block). Opt-in with -Pointer while it is under test.
     $ptrDll = Join-Path $repo 'build\votv_pointer\votv_pointer.dll'
     $ptrDst = Join-Path $profileDir 'plugins\votv_pointer.dll'
     if (Test-Path $ptrDst) { Remove-Item $ptrDst -Force -ErrorAction SilentlyContinue }
-    if ($Pointer -and (Test-Path $ptrDll)) {
+    if ($LateInject -and $Pointer) { Write-RunLog 'pointer plugin: -Pointer ignored with -LateInject (menus use Virtual Desktop''s desktop laser)' }
+    if ($Pointer -and -not $LateInject -and (Test-Path $ptrDll)) {
         New-Item -ItemType Directory -Force (Split-Path $ptrDst) | Out-Null
         Copy-Item $ptrDll $ptrDst -Force
         Write-RunLog "pointer plugin installed: votv_pointer.dll sha256 $((Get-FileHash $ptrDll -Algorithm SHA256).Hash.Substring(0,12))"
-    } else { Write-RunLog "pointer plugin: not installed ($(if (-not $Pointer) { 'no -Pointer' } else { 'not built' }))" }
+    } else { Write-RunLog "pointer plugin: not installed ($(if (-not $Pointer) { 'no -Pointer' } elseif ($LateInject) { '-LateInject' } else { 'not built' }))" }
     # Runtime: the repo baseline is the source of truth (the injector rewrites the AppData copy).
     # -Runtime OpenVR is a per-run override (SteamVR parallel test); the default stays OpenXR and
     # is restored in the finally block.
@@ -313,8 +320,27 @@ try {
     }
     Write-RunLog "game window up: '$($game.MainWindowTitle)'"
 
+    if (-not $NoInject -and $LateInject) {
+        # Late inject (user plan 2026-11-27): the game runs flat until the user is past the menus, so Virtual
+        # Desktop shows it on its desktop view with VD's own laser pointer (it moves the real mouse). The shipping
+        # build writes no VotV.log (Saved\Logs is empty), so there is no map-load line to wait for: the user
+        # presses F10 (read with GetAsyncKeyState, works whatever window has focus) once the save has loaded.
+        Add-Type -Namespace VotvLate -Name Keys -MemberDefinition '[DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vKey);' -ErrorAction SilentlyContinue
+        Write-RunLog "late inject: game is flat; press F10 once your save has loaded (waiting up to ${LateInjectTimeoutMinutes} min)"
+        $deadline = (Get-Date).AddMinutes($LateInjectTimeoutMinutes)
+        $pressed = $false
+        while ((Get-Date) -lt $deadline) {
+            $game.Refresh()
+            if ($game.HasExited) { throw 'game exited before F10 (late inject)' }
+            if (([VotvLate.Keys]::GetAsyncKeyState(0x79) -band 0x8000) -ne 0) { $pressed = $true; break }
+            Start-Sleep -Milliseconds 100
+        }
+        if (-not $pressed) { throw "late inject: no F10 within $LateInjectTimeoutMinutes min" }
+        Write-RunLog 'late inject: F10 pressed, injecting in 3 s'
+        Start-Sleep -Seconds 3
+    }
     if (-not $NoInject) {
-        Start-Sleep -Seconds $InjectDelaySeconds
+        if (-not $LateInject) { Start-Sleep -Seconds $InjectDelaySeconds }
         $game.Refresh()
         if ($game.HasExited) { throw 'game exited during the inject delay' }
         $injector = Start-Process -FilePath $injExe -ArgumentList "--attach=$procName" -WorkingDirectory (Split-Path $injExe) -PassThru

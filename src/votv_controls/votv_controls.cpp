@@ -108,7 +108,10 @@ public:
 
         if (t - uevr_check_t_ > 1000) { uevr_check_t_ = t; enforce_uevr_values(); }
         if (t - cfg_sent_t_ > 2000) { cfg_sent_t_ = t; API::get()->dispatch_lua_event("votv_cfg", settings_text_.c_str());
-            if (presets_t_ == 0) load_presets(); else API::get()->dispatch_lua_event("votv_presets", presets_text().c_str()); presets_t_ = t; }
+            if (presets_t_ == 0) load_presets(); else API::get()->dispatch_lua_event("votv_presets", presets_text().c_str()); presets_t_ = t;
+            // game's own open/fist finger rotations (tools/animread writes it; game-derived, so never in the repo)
+            if (game_poses_.empty()) game_poses_ = read_file(dir_ / "votv_game_hand_poses.txt");
+            if (!game_poses_.empty()) API::get()->dispatch_lua_event("votv_game_poses", game_poses_.c_str()); }
         if (t - settings_check_t_ < 50) poll_preset_saves();
         if (t - presets_poll_t_ > 250) { presets_poll_t_ = t; reload_presets_if_changed(); }
 
@@ -419,6 +422,7 @@ private:
         {0.60f, 0.90f, 0.90f, 0.90f, 0.90f}, {0.50f, 0.f, 0.f, 0.f, 0.f}, {0.90f, 0.f, 0.f, 0.f, 0.f}};
     std::streamoff log_pos_{-1};
     double presets_t_{0};
+    std::string game_poses_;
 
     std::string presets_text() {
         std::string t;
