@@ -36,9 +36,12 @@ param(
     [int]$EyeCaptureFirstDelaySeconds = 30,    # after injection, before the first snap
     [int]$EyeCaptureMax = 30,                  # bound on snaps per run
     [switch]$LeaveSteamVR,                     # SteamVR runs: keep SteamVR open afterwards (default: close it if this run started it)
+    [switch]$DisableVdOculusLayer,             # OpenXR runs: turn off Virtual Desktop's OculusXR compatibility API layer for the game (tried for the quit crash 2026-11-27: no effect, so off by default)
     [switch]$ResetProfile,
     [switch]$NoInject,                         # flat run with the same launch path, for A/B
     [switch]$Controls,                         # install the motion-controller plugin (votv_controls.dll) for this run (opt-in while under test)
+    [switch]$Pointer,                          # install the flat-menu laser pointer (votv_pointer.dll, menu thread) for this run (opt-in while under test)
+    [switch]$Marks,                            # install the marks plugin (votv_marks.dll: left grip + right stick click or F8 drops a mark into <repo>\marks\); opt-in until its first in-game check passes
     [switch]$DryRun                            # run every pre-launch check and fix, then stop without launching
 )
 
@@ -75,6 +78,17 @@ function Set-InjectorRadio([bool]$xr) {
     }
     $name = if ($xr) { 'OpenXR' } else { 'OpenVR' }
     if ($changed) { $x.Save($injCfg); Write-RunLog "injector radio set to $name" } else { Write-RunLog "injector radio already $name" }
+}
+
+function Set-ProfileKey([string]$key, [string]$want) {
+    $t = [System.IO.File]::ReadAllText($profCfg)
+    $re = '(?m)^' + [regex]::Escape($key) + '=(.*)$'
+    if ($t -match $re) {
+        if ($Matches[1].Trim() -eq $want) { return }
+        $t = [regex]::Replace($t, $re, "$key=$want")
+    } else { $t = $t.TrimEnd() + "`r`n$key=$want`r`n" }
+    [System.IO.File]::WriteAllText($profCfg, $t)
+    Write-RunLog "profile $key set to $want"
 }
 
 function Set-ProfileRuntime([string]$want) {
@@ -166,9 +180,22 @@ try {
     $exeHash  = (Get-FileHash $shipping -Algorithm SHA256).Hash.ToLower()
     $uevrRev  = (Get-Content (Join-Path $UevrDir 'revision.txt') -ErrorAction SilentlyContinue) -join ''
     Write-RunLog "run $stamp | game exe sha256 $exeHash | UEVR dir $UevrDir rev $uevrRev"
+    # UEVR hooks DX11/DX12 only; the game also offers Vulkan (in-game RHI manager / launcher choice). The
+    # command-line RHI flag overrides the saved choice, so always pass one and never pass -vulkan.
+    $rhiFlags = '^-(d3d11|dx11|d3d12|dx12)$'
+    $dropped = @($GameArgs | Where-Object { $_ -match '^-(vulkan|opengl|sm5vulkan)$' })
+    if ($dropped) { $GameArgs = @($GameArgs | Where-Object { $_ -notmatch '^-(vulkan|opengl|sm5vulkan)$' }); Write-RunLog "WARNING: removed $($dropped -join ' ') from the game arguments (UEVR supports DX11/DX12 only)" }
+    if (-not ($GameArgs | Where-Object { $_ -match $rhiFlags })) { $GameArgs = @($GameArgs) + '-d3d11'; Write-RunLog 'no DX flag in the game arguments: added -d3d11' }
     Write-RunLog "launch $exe $($GameArgs -join ' ') | inject=$(-not $NoInject) delay=${InjectDelaySeconds}s"
     $knownHash = '5e690d8f62fe6ce5b9d46815dd05ced45e52a4f110e91f0b6248bbacbe96f6cc'
     if ($exeHash -ne $knownHash) { Write-RunLog "WARNING: game exe differs from the build in RESEARCH.md §0 ($knownHash)" }
+    # Other mod loaders next to the exe (Thunderstore shimloader / UE4SS as dwmapi.dll, UE4SS.dll, ...):
+    # untested together with UEVR, and some early 0.9.0 builds crash on them (docs/MODDING-WIKI.md).
+    $win64 = Split-Path $shipping
+    $extra = @(Get-ChildItem $win64 -Force | Where-Object { $_.Name -ne "$procName.exe" } | ForEach-Object Name)
+    Write-RunLog "game Win64 folder extras: $(if ($extra) { $extra -join ', ' } else { 'none' })"
+    $loaders = @($extra | Where-Object { $_ -match '^(dwmapi|UE4SS|xinput1_3|version|winmm|dinput8|d3d11|dxgi)\.dll$|^(ue4ss|shimloader)$' })
+    if ($loaders) { Write-RunLog "WARNING: mod loader files next to the game exe: $($loaders -join ', '). UEVR together with them is untested." }
 
     # Profile: seed from the repo baseline only if missing (or on request).
     New-Item -ItemType Directory -Force $profileDir | Out-Null
@@ -205,6 +232,19 @@ try {
         Copy-Item $ctlDll $ctlDst -Force
         Write-RunLog "controls plugin installed: votv_controls.dll sha256 $((Get-FileHash $ctlDll -Algorithm SHA256).Hash.Substring(0,12))"
     } else { Write-RunLog "controls plugin: not installed ($(if (-not $Controls) { 'no -Controls' } else { 'not built' }))" }
+    # Marks plugin (mark thread): screenshot + state JSON on a button, into <repo>\marks\. This run only.
+    . (Join-Path $scriptDir 'marks.ps1')
+    if (-not $Marks) { Remove-MarksPlugin $profileDir; Write-RunLog 'marks plugin: not installed (no -Marks)' } else { Install-MarksPlugin $profileDir ${function:Write-RunLog} }
+    # Flat-menu laser pointer (menu thread): build/votv_pointer/votv_pointer.dll -> profile plugins folder, this run
+    # only (removed in the finally block). Opt-in with -Pointer while it is under test.
+    $ptrDll = Join-Path $repo 'build\votv_pointer\votv_pointer.dll'
+    $ptrDst = Join-Path $profileDir 'plugins\votv_pointer.dll'
+    if (Test-Path $ptrDst) { Remove-Item $ptrDst -Force -ErrorAction SilentlyContinue }
+    if ($Pointer -and (Test-Path $ptrDll)) {
+        New-Item -ItemType Directory -Force (Split-Path $ptrDst) | Out-Null
+        Copy-Item $ptrDll $ptrDst -Force
+        Write-RunLog "pointer plugin installed: votv_pointer.dll sha256 $((Get-FileHash $ptrDll -Algorithm SHA256).Hash.Substring(0,12))"
+    } else { Write-RunLog "pointer plugin: not installed ($(if (-not $Pointer) { 'no -Pointer' } else { 'not built' }))" }
     # Runtime: the repo baseline is the source of truth (the injector rewrites the AppData copy).
     # -Runtime OpenVR is a per-run override (SteamVR parallel test); the default stays OpenXR and
     # is restored in the finally block.
@@ -213,6 +253,10 @@ try {
     $wantRt = if ($Runtime -eq 'OpenVR') { 'openvr_api.dll' } else { 'openxr_loader.dll' }
     $wantXr = ($wantRt -eq 'openxr_loader.dll')
     Set-ProfileRuntime $wantRt
+    # UEVR's own menu stays closed at start (user 2026-11-27 02:11: "if I need it I will open it myself").
+    # UEVR only honours MenuOpen=false when RememberMenuState is on, and it saves MenuOpen on exit, so set both every run.
+    Set-ProfileKey 'FrameworkConfig_RememberMenuState' 'true'
+    Set-ProfileKey 'FrameworkConfig_MenuOpen' 'false'
     Write-RunLog "runtime wanted: $wantRt (-Runtime $Runtime; baseline $baseRt)"
 
     # The injector writes its OpenXR/OpenVR radio button into the profile at injection. Its saved radio
@@ -240,6 +284,15 @@ try {
     @{ stamp = $stamp; runDir = $runDir; runtime = $Runtime; feature = $Feature; started = (Get-Date).ToString('s') } |
         ConvertTo-Json | Set-Content -Path $activeMarker -Encoding utf8
     $ownsMarker = $true
+
+    # Virtual Desktop installs an implicit OpenXR API layer ("Compatibility layer for OculusXR Plugin",
+    # openxr-oculus-compatibility.dll). UEVR doesn't need it. Turning it off (its manifest's disable_environment,
+    # this game process only) did NOT stop the quit crash (run 2026-11-27_01-40-29): VirtualDesktop.LibOVRRT64_1.dll
+    # is loaded by VD's runtime itself. Opt-in switch for A/B only.
+    if ($wantXr -and -not $NoInject -and $DisableVdOculusLayer) {
+        $env:DISABLE_XR_APILAYER_VIRTUALDESKTOP_OCULUS_COMPATIBILITY = '1'
+        Write-RunLog 'VD OculusXR compatibility layer disabled for this run (-DisableVdOculusLayer)'
+    }
 
     # Launch the game.
     Start-Process -FilePath $exe -ArgumentList $GameArgs -WorkingDirectory (Split-Path $exe) | Out-Null
@@ -321,6 +374,14 @@ try {
             $svState = if ($now -and -not $steamBefore) { 'started' } elseif ($now) { 'was-already-running' } else { 'not-running' }
             Write-RunLog "SteamVR during run: $svState"
             if ($svState -eq 'started') { Write-RunLog 'WARNING: SteamVR started during an OpenXR run' }
+            # Which XR modules are in the game process (proves whether the VD layer switch took effect).
+            try {
+                $game.Refresh()
+                $xrMods = @($game.Modules | Where-Object { $_.ModuleName -match 'openxr|LibOVRRT|oculus' } | ForEach-Object ModuleName)
+                $gfx = @($game.Modules | Where-Object { $_.ModuleName -match '^(d3d11|d3d12|vulkan-1)\.dll$' } | ForEach-Object ModuleName)
+                Write-RunLog "render modules in game: $(if ($gfx) { $gfx -join ', ' } else { 'none' })"
+                Write-RunLog "XR modules in game: $(if ($xrMods) { $xrMods -join ', ' } else { 'none' })"
+            } catch { Write-RunLog "XR modules in game: unknown ($($_.Exception.Message))" }
         }
     }
 
@@ -354,8 +415,20 @@ finally {
     if (Test-Path $ctlTrace) { Move-Item $ctlTrace (Join-Path $runDir 'votv_controls_trace.txt') -Force -ErrorAction SilentlyContinue }
     $ctlDst2 = Join-Path $profileDir 'plugins\votv_controls.dll'
     if (Test-Path $ctlDst2) { Remove-Item $ctlDst2 -Force -ErrorAction SilentlyContinue }
+    $mkDst = Join-Path $profileDir 'plugins\votv_marks.dll'
+    if (Test-Path $mkDst) { Remove-Item $mkDst -Force -ErrorAction SilentlyContinue }
+    # Pointer plugin: trace goes with the logs; the DLL leaves the profile with the run.
+    $ptrTrace = Join-Path $profileDir 'votv_pointer_trace.txt'
+    if (Test-Path $ptrTrace) { Move-Item $ptrTrace (Join-Path $runDir 'votv_pointer_trace.txt') -Force -ErrorAction SilentlyContinue }
+    $ptrDst2 = Join-Path $profileDir 'plugins\votv_pointer.dll'
+    if (Test-Path $ptrDst2) { Remove-Item $ptrDst2 -Force -ErrorAction SilentlyContinue }
     foreach ($f in @('log.txt', 'config.txt', 'cameras.txt', 'imgui.ini')) {
         $src = Join-Path $profileDir $f
+        # log.txt only if UEVR wrote it during this run (else it is an older run's log: false PASS risk).
+        if ($f -eq 'log.txt' -and (Test-Path $src) -and (Get-Item $src).LastWriteTime -lt (Get-Item $runLog).CreationTime) {
+            Write-RunLog 'UEVR log.txt not copied: not written during this run'
+            continue
+        }
         if (Test-Path $src) { Copy-Item $src (Join-Path $runDir ("uevr_" + $f)) -Force }
     }
     $gameLogs = Join-Path $env:LOCALAPPDATA 'VotV\Saved\Logs'
