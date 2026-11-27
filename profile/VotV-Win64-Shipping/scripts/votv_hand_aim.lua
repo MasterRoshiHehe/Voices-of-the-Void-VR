@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hand] " .. tostring(s)) end) end
 
-local cfg = { hand_aim = 1, hand_arms = 0, hand_log_s = 2 }
+local cfg = { hand_aim = 1, hand_arms = 0, hand_log_s = 2, hand_pre_apply = 1, hand_max_cm = 150, hand_arm_hook = 1 }
 local active = false
 
 local function parse_cfg(text)
@@ -62,6 +62,8 @@ local function attach(comp, hand)
     return true
 end
 
+local hook_arm   -- defined below (needs dist and the camera manager helpers)
+
 local function setup(pawn)
     state.pawn, state.hand, state.arms_done = pawn, nil, false
     -- static library functions are called on the class default object, not the class
@@ -78,6 +80,7 @@ local function setup(pawn)
     if comp == nil then log("setup: AddComponentByClass returned nil"); return end
     if not attach(comp, 1) then log("setup: motion controller state failed"); return end
     state.hand = comp
+    hook_arm()
     log("hand component attached to the right controller on " .. pawn:get_full_name())
 end
 
@@ -89,6 +92,39 @@ local function attach_arms(pawn)
 end
 
 local function dist(a, b) local dx, dy, dz = a.X - b.X, a.Y - b.Y, a.Z - b.Z; return math.sqrt(dx * dx + dy * dy + dz * dz) end
+
+-- arm() pre-hook (user 02:39: highlight still followed the head even though the camera manager actor sat on the
+-- hand between frames). Something moves the camera manager back to the head inside the frame before the pawn
+-- traces, so the move is also done right before every mainPlayer_C:arm() call, the one function that builds the
+-- look/use/grab ray. The hook records how far the camera manager was from the hand when arm() was entered.
+local arm_stats = { calls = 0, moved = 0, max_off = 0 }
+local function move_pcm_to_hand()
+    if state.hand == nil or state.untracked then return end
+    local pc = api:get_player_controller(0)
+    local pcm = pc and pc.PlayerCameraManager
+    if pcm == nil then return end
+    local loc = state.hand:K2_GetComponentLocation()
+    local off = dist(pcm:K2_GetActorLocation(), loc)
+    arm_stats.calls = arm_stats.calls + 1
+    if off > 0.5 then arm_stats.moved = arm_stats.moved + 1 end
+    if off > arm_stats.max_off then arm_stats.max_off = off end
+    pcm:K2_SetActorLocationAndRotation(loc, state.hand:K2_GetComponentRotation(), false, hit, false)
+end
+local arm_hooked = false
+hook_arm = function()
+    if arm_hooked then return end
+    arm_hooked = true
+    local ok, err = pcall(function()
+        local cls = find("BlueprintGeneratedClass /Game/main/mainPlayer.mainPlayer_C")
+        local f = cls and cls:find_function("arm")
+        if f == nil then error("mainPlayer_C:arm not found") end
+        f:hook_ptr(function(fn, obj, locals, result)
+            if active and cfg.hand_aim ~= 0 and cfg.hand_arm_hook ~= 0 then pcall(move_pcm_to_hand) end
+            return true
+        end, nil)
+    end)
+    log(ok and "hooked mainPlayer_C:arm (pre: camera manager to the hand)" or ("arm hook failed: " .. tostring(err)))
+end
 
 uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
     if not active or cfg.hand_aim == 0 then return end
@@ -120,8 +156,9 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
             state.last_log = state.t
             local head = pawn.Camera:K2_GetComponentLocation()
             local now = pcm:K2_GetActorLocation()
-            log(string.format("hand-head %.0f cm, pcm-hand %.1f cm, hand rot p%.0f y%.0f, sets %d",
-                dist(loc, head), dist(now, loc), r.Pitch, r.Yaw, state.sets))
+            log(string.format("hand-head %.0f cm, pcm-hand %.1f cm, hand rot p%.0f y%.0f, sets %d; arm() calls %d, camera manager away from the hand on entry %d times (max %.0f cm)",
+                dist(loc, head), dist(now, loc), r.Pitch, r.Yaw, state.sets, arm_stats.calls, arm_stats.moved, arm_stats.max_off))
+            arm_stats.calls, arm_stats.moved, arm_stats.max_off = 0, 0, 0
         end
     end)
     if not ok then
@@ -130,17 +167,57 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
     end
 end)
 
--- Check that the move survives until the pawn's tick: compare the camera manager actor with the hand at the
--- start of the next frame (logged with the same cadence as above).
+-- Also apply at the start of the next frame (in case anything resets the camera manager actor between frames),
+-- and log where the game's own look ray actually went (user 02:33: "I don't highlight things with my hand
+-- anymore, that is done with my view"). Angles are between directions from the hand (or the head) and the
+-- game's look hit point (pawn.hitResult): small "from hand" = the game aims with the hand.
+local function angle(a, b)
+    local la = math.sqrt(a.X * a.X + a.Y * a.Y + a.Z * a.Z); local lb = math.sqrt(b.X * b.X + b.Y * b.Y + b.Z * b.Z)
+    if la < 1e-6 or lb < 1e-6 then return -1 end
+    local d = (a.X * b.X + a.Y * b.Y + a.Z * b.Z) / (la * lb)
+    return math.deg(math.acos(math.max(-1, math.min(1, d))))
+end
+local function sub(a, b) return { X = a.X - b.X, Y = a.Y - b.Y, Z = a.Z - b.Z } end
+
 local pre_t = 0
 uevr.sdk.callbacks.on_pre_engine_tick(function(engine, delta)
-    if not active or cfg.hand_aim == 0 or state.hand == nil then return end
-    pre_t = pre_t + delta
-    if pre_t < cfg.hand_log_s then return end
-    pre_t = 0
+    if not active or cfg.hand_aim == 0 or state.hand == nil or state.untracked then return end
     pcall(function()
         local pcm = api:get_player_controller(0).PlayerCameraManager
-        log(string.format("pre-tick pcm-hand %.1f cm", dist(pcm:K2_GetActorLocation(), state.hand:K2_GetComponentLocation())))
+        local loc = state.hand:K2_GetComponentLocation()
+        local r = state.hand:K2_GetComponentRotation()
+        local moved = dist(pcm:K2_GetActorLocation(), loc)
+        if cfg.hand_pre_apply ~= 0 then pcm:K2_SetActorLocationAndRotation(loc, r, false, hit, false) end
+        pre_t = pre_t + delta
+        if pre_t < cfg.hand_log_s then return end
+        pre_t = 0
+        local pawn = state.pawn
+        local hf = state.hand:GetForwardVector()
+        local pf = pcm:GetActorForwardVector()
+        local head = pawn.Camera:K2_GetComponentLocation()
+        local vf = pawn.Camera:GetForwardVector()
+        local hr = nil
+        pcall(function() hr = pawn.hitResult end)
+        local hp, ts = nil, nil
+        pcall(function() hp = hr.bBlockingHit and hr.ImpactPoint or hr.TraceEnd; ts = hr.TraceStart end)
+        if ts == nil then hp = nil end
+        local msg = string.format("pre-tick: pcm moved %.1f cm since last set, pcm-vs-hand dir %.1f deg, view-vs-hand dir %.1f deg",
+            moved, angle(pf, hf), angle(vf, hf))
+        -- The look target the game picked, by its location (FHitResult fields don't read from Lua here).
+        local la = nil
+        pcall(function() la = pawn.lookAtActor end)
+        if la ~= nil then
+            local ok2, alo = pcall(function() return la:K2_GetActorLocation() end)
+            if ok2 and alo ~= nil then
+                msg = msg .. string.format(" | look target %s: off hand ray %.1f deg, off head view %.1f deg",
+                    la:get_fname():to_string(), angle(sub(alo, loc), hf), angle(sub(alo, head), vf))
+            end
+        end
+        if hp ~= nil then
+            msg = msg .. string.format(" | game hit %s: from hand %.1f deg, from head %.1f deg; game trace starts %.0f cm from hand, %.0f cm from head",
+                tostring(hr.bBlockingHit), angle(sub(hp, loc), hf), angle(sub(hp, head), vf), dist(ts, loc), dist(ts, head))
+        end
+        log(msg)
     end)
 end)
 
