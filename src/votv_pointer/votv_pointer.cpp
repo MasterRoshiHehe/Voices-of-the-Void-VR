@@ -102,8 +102,10 @@ struct Settings {
     bool left_handed = false;
     bool trace_hits = true;
     bool dot_desktop = true;      // game backbuffer (PC monitor)
-    bool dot_framework = true;    // UEVR framework texture (headset, to be confirmed)
+    bool dot_framework = false;   // UEVR framework texture: drawn there 02:39, not visible in the headset
     float dot_framework_scale = 1.0f;
+    bool dot_ui = true;           // UEVR's UI render target (Slate / menus)
+    bool dot_scene = true;        // UEVR's scene render target
     bool calibrate = false;       // ptr_calibrate=1: trigger records the 4 screen corners, no clicks
     bool click = true;            // ptr_click=0: never click (pointing only)
 };
@@ -263,6 +265,54 @@ public:
         draw_dot(context, rtv, desc.Width, desc.Height, std::max(4, (int)std::lround(s_.dot_px * desc.Width / 2560.0 * s_.dot_framework_scale)));
     }
 
+    // Live 2026-11-27 02:39: neither the backbuffer dot (Present) nor the framework-texture dot reached the
+    // headset; UEVR showed the framework texture as 2560x1440 BGRA but the 2D screen doesn't use it. UEVR's own
+    // render targets are the next candidates: its UI target (where it redirects Slate, i.e. the game's menus)
+    // and its scene target. Drawn right after Slate drew the window (render thread). Each is switchable
+    // (ptr_dot_ui, ptr_dot_scene) and its size is logged once.
+    void on_post_slate_draw_window(UEVR_FSlateRHIRendererHandle, UEVR_FViewportInfoHandle) override {
+        if (!g_active.load() || !dot_visible_) return;
+        auto r = API::get()->param()->renderer;
+        if (r == nullptr || r->renderer_type != UEVR_RENDERER_D3D11) return;
+        if (s_.dot_ui) draw_into_uevr_rt(API::StereoHook::get_ui_render_target(), ui_rt_, "UI");
+        if (s_.dot_scene) draw_into_uevr_rt(API::StereoHook::get_scene_render_target(), scene_rt_, "scene");
+    }
+
+    struct RtCache { void* tex = nullptr; ID3D11RenderTargetView* rtv = nullptr; bool logged = false; bool failed = false; };
+
+    void draw_into_uevr_rt(API::FRHITexture2D* rhi, RtCache& c, const char* what) {
+        if (rhi == nullptr) { if (!c.logged) { c.logged = true; log("dot: no UEVR %s render target", what); } return; }
+        auto tex = (ID3D11Texture2D*)rhi->get_native_resource();
+        if (tex == nullptr) return;
+        if (tex != c.tex) {
+            if (c.rtv) { c.rtv->Release(); c.rtv = nullptr; }
+            c.tex = tex; c.failed = false;
+            ID3D11Device* dev = nullptr;
+            tex->GetDevice(&dev);
+            if (dev) {
+                if (FAILED(dev->CreateRenderTargetView(tex, nullptr, &c.rtv))) { c.rtv = nullptr; c.failed = true; }
+                dev->Release();
+            }
+            D3D11_TEXTURE2D_DESC d{};
+            tex->GetDesc(&d);
+            log("dot: UEVR %s render target %ux%u fmt %d bind 0x%x, rtv %s", what, d.Width, d.Height, (int)d.Format, d.BindFlags,
+                c.rtv ? "ok" : "FAILED");
+        }
+        if (c.rtv == nullptr) return;
+        ID3D11Device* dev = nullptr;
+        tex->GetDevice(&dev);
+        if (!dev) return;
+        ID3D11DeviceContext* ctx = nullptr;
+        dev->GetImmediateContext(&ctx);
+        if (ctx) {
+            D3D11_TEXTURE2D_DESC d{};
+            tex->GetDesc(&d);
+            draw_dot(ctx, c.rtv, d.Width, d.Height, std::max(4, (int)std::lround(s_.dot_px * d.Width / 2560.0)));
+            ctx->Release();
+        }
+        dev->Release();
+    }
+
     void draw_dot(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv, UINT w, UINT hgt, int px) {
         ID3D11DeviceContext1* ctx1 = nullptr;
         if (FAILED(ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&ctx1)) || ctx1 == nullptr) return;
@@ -280,6 +330,7 @@ public:
     void on_device_reset() override {
         if (rtv_) { rtv_->Release(); rtv_ = nullptr; }
         rtv_tex_ = nullptr;
+        for (RtCache* c : {&ui_rt_, &scene_rt_}) { if (c->rtv) c->rtv->Release(); *c = RtCache{}; }
     }
 
 private:
@@ -372,6 +423,8 @@ private:
         b("ptr_trace_hits", n.trace_hits);
         b("ptr_dot_desktop", n.dot_desktop);
         b("ptr_calibrate", n.calibrate);
+        b("ptr_dot_ui", n.dot_ui);
+        b("ptr_dot_scene", n.dot_scene);
         b("ptr_click", n.click);
         b("ptr_dot_framework", n.dot_framework);
         f("ptr_dot_framework_scale", n.dot_framework_scale);
@@ -413,6 +466,7 @@ private:
     std::atomic<float> dot_u_{0.5f}, dot_v_{0.5f};
     bool warned_renderer_ = false;
     bool logged_framework_ = false;
+    RtCache ui_rt_, scene_rt_;
     votv::Local2 calib_[4];
     int calib_n_ = 0;
     ID3D11RenderTargetView* rtv_ = nullptr;
