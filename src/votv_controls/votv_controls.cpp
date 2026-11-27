@@ -20,6 +20,7 @@
 
 #include "uevr/Plugin.hpp"
 #include "mapper.hpp"
+#include <openvr.h>   // SteamVR skeletal input (Index per-finger curl); tools/openvr-sdk headers, loaded via UEVR's openvr_api.dll
 
 using namespace uevr;
 namespace fs = std::filesystem;
@@ -121,6 +122,7 @@ public:
         mask_for_pointer(p);
         mapper_.update(p, t);
         smooth_turn(p, t);
+        update_fingers(p, t);
     }
 
     // Menu laser pointer (main-menu thread's votv_pointer.dll) owns the pointing hand's trigger, stick and A
@@ -190,6 +192,7 @@ private:
     double turn_t_{0};
     float turn_speed_{120}, turn_deadzone_{0.2f}, yaw_scale_{2.5f};
     int turn_method_{0};
+    float finger_speed_{14};
     int rstick_x_state_{0};
     votv::Mapper mapper_;
     bool seen_pad_{false}, zero_pad_{true}, snap_turn_{true};
@@ -271,6 +274,7 @@ private:
         turn_deadzone_ = std::clamp(num("ctl_turn_deadzone", turn_deadzone_), 0.f, 0.9f);
         yaw_scale_ = std::max(0.01f, num("ctl_yaw_scale", yaw_scale_));
         turn_method_ = (int)num("ctl_turn_method", 0);
+        finger_speed_ = num("ctl_finger_speed", 14);
         int aim = (int)num("ctl_aim_method", 1);   // UEVR enum: 0 game, 1 head, 2 right controller, 3 left; hand ray: votv_hand_aim.lua
         if (s.left_handed && aim == 2) aim = 3;
         if (aim >= 0 && aim <= 5) aim_method_ = aim;
@@ -281,6 +285,75 @@ private:
         log("settings %s (%s): enabled=%d left_handed=%d aim=%d snap=%d zero_pad=%d trig=%.2f/%.2f move=%.2f",
             first ? "loaded" : "reloaded", text.empty() ? "file missing, defaults" : "file", s.enabled, s.left_handed,
             aim_method_, snap_turn_, zero_pad_, s.trigger_press, s.trigger_release, s.move_threshold);
+    }
+
+
+    // ---- finger curl for the VR hands (votv_hands.lua) ----
+    // User 2026-11-27 18:30: grip curls middle/ring/pinky, trigger the index finger, face buttons the thumb; Valve
+    // Index (Knuckles) must drive all five fingers. Source per run: SteamVR skeletal summary (UEVR's manifest has
+    // /actions/default/in/Skeleton{Left,Right}Hand) when UEVR runs on OpenVR and the device reports it, else the
+    // buttons (UEVR's emulated XInput: analog triggers, digital grips/face buttons). Curls are 0..1 per finger
+    // (thumb, index, middle, ring, pinky), smoothed, and sent to Lua as "votv_fingers" events (max 60 Hz).
+    vr::IVRInput* vrin_{nullptr};
+    vr::VRActionHandle_t skel_[2]{0, 0};
+    bool vr_tried_{false};
+    std::string finger_src_;
+    float curl_[2][5]{}, curl_sent_[2][5]{};
+    double finger_t_{0}, finger_sent_t_{0};
+
+    bool skeletal(int side, float out[5]) {
+        if (!vr_tried_) {
+            vr_tried_ = true;
+            if (API::VR::is_openvr()) {
+                HMODULE m = GetModuleHandleW(L"openvr_api.dll");
+                using Fn = void* (*)(const char*, vr::EVRInitError*);
+                auto fn = m ? (Fn)GetProcAddress(m, "VR_GetGenericInterface") : nullptr;
+                vr::EVRInitError err = vr::VRInitError_None;
+                if (fn) vrin_ = (vr::IVRInput*)fn(vr::IVRInput_Version, &err);
+                if (vrin_) {
+                    vrin_->GetActionHandle("/actions/default/in/SkeletonLeftHand", &skel_[0]);
+                    vrin_->GetActionHandle("/actions/default/in/SkeletonRightHand", &skel_[1]);
+                }
+                event(std::string("fingers: SteamVR input ") + (vrin_ ? "found" : "not available"));
+            }
+        }
+        if (vrin_ == nullptr || skel_[side] == 0) return false;
+        vr::VRSkeletalSummaryData_t d{};
+        if (vrin_->GetSkeletalSummaryData(skel_[side], vr::VRSummaryType_FromDevice, &d) != vr::VRInputError_None) return false;
+        for (int f = 0; f < 5; ++f) out[f] = std::clamp(d.flFingerCurl[f], 0.f, 1.f);
+        return true;
+    }
+
+    void update_fingers(const votv::PadState& p, double t) {
+        const double dt = finger_t_ > 0 ? std::min(100.0, t - finger_t_) / 1000.0 : 0.0;
+        finger_t_ = t;
+        for (int side = 0; side < 2; ++side) {
+            float target[5];
+            std::string src = "skeletal";
+            if (!skeletal(side, target)) {
+                src = "buttons";
+                const bool right = side == 1;
+                const float trig = right ? p.rt : p.lt;
+                const bool grip = (p.buttons & (right ? votv::PAD_RSHOULDER : votv::PAD_LSHOULDER)) != 0;
+                const bool thumb = (p.buttons & (right ? (votv::PAD_A | votv::PAD_B | votv::PAD_RTHUMB)
+                                                       : (votv::PAD_X | votv::PAD_Y | votv::PAD_LTHUMB))) != 0;
+                target[0] = thumb ? 1.f : 0.f;
+                target[1] = std::clamp(trig, 0.f, 1.f);
+                target[2] = target[3] = target[4] = grip ? 1.f : 0.f;
+            }
+            if (side == 1 && src != finger_src_) { finger_src_ = src; event("fingers: source " + src); }
+            const float k = (float)std::min(1.0, dt * finger_speed_);
+            for (int f = 0; f < 5; ++f) curl_[side][f] += (target[f] - curl_[side][f]) * k;
+        }
+        bool changed = false;
+        for (int s2 = 0; s2 < 2; ++s2) for (int f = 0; f < 5; ++f) if (std::fabs(curl_[s2][f] - curl_sent_[s2][f]) > 0.01f) changed = true;
+        if (!changed || t - finger_sent_t_ < 16) return;
+        finger_sent_t_ = t;
+        char buf[160];
+        snprintf(buf, sizeof(buf), "L %.2f %.2f %.2f %.2f %.2f R %.2f %.2f %.2f %.2f %.2f",
+                 curl_[0][0], curl_[0][1], curl_[0][2], curl_[0][3], curl_[0][4], curl_[1][0], curl_[1][1], curl_[1][2], curl_[1][3], curl_[1][4]);
+        std::memcpy(curl_sent_, curl_, sizeof(curl_));
+        API::get()->dispatch_lua_event("votv_fingers", buf);
     }
 
     // UEVR mod values this plugin owns. Checked every second; re-set and logged when they differ (profile
