@@ -25,6 +25,18 @@ $runTxt = Join-Path $RunDir 'run.txt'
 $uevrLog = Join-Path $RunDir 'uevr_log.txt'
 $run = if (Test-Path $runTxt) { Get-Content $runTxt } else { @() }
 $uevr = if (Test-Path $uevrLog) { Get-Content $uevrLog } else { @() }
+# Only judge this run's UEVR log: the launcher copies the profile's log.txt even when this run never
+# injected, so an older run's log could pass the runtime checks (false PASS seen on the 01:36 run).
+$staleUevr = $null
+try {
+    $day0 = [datetime]::ParseExact((Split-Path $RunDir -Leaf).Substring(0, 19), 'yyyy-MM-dd_HH-mm-ss', $null)
+    $firstUevr = $uevr | Select-String -Pattern '^\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)' | Select-Object -First 1
+    if ($firstUevr) {
+        $tU = [datetime]::ParseExact($firstUevr.Matches[0].Groups[1].Value, 'yyyy-MM-dd HH:mm:ss', $null)
+        if ($tU -lt $day0.AddSeconds(-5)) { $staleUevr = "uevr_log.txt starts $tU, before this run ($day0)"; $uevr = @() }
+    }
+} catch { }
+if (-not ($run | Select-String -Pattern 'UEVRInjector started' -Quiet)) { $uevr = @(); if (-not $staleUevr) { $staleUevr = 'no "UEVRInjector started" line: this run never injected' } }
 $finished = [bool]($run | Select-String -Pattern '^\[[^\]]+\] logs in |recovered by')
 if (-not $finished -and (Get-Process -Name 'VotV-Win64-Shipping' -ErrorAction SilentlyContinue)) {
     # Judging a live run gives false FAILs (its logs are copied at the end); write nothing.
@@ -49,7 +61,7 @@ if ($noInject) {
     $reqLine = Find $uevr 'Requested runtime: (\S+)'
     $req = if ($reqLine) { $reqLine.Matches[0].Groups[1].Value } else { $null }
     if (-not $want) { Add-Check UNSURE runtime-request "run.txt has no 'runtime wanted' line (run before 2026-11-27 00:43?); UEVR requested $req" }
-    elseif (-not $req) { Add-Check FAIL runtime-request "UEVR log has no 'Requested runtime' line (not injected, or log not copied)" }
+    elseif (-not $req) { Add-Check FAIL runtime-request "UEVR log has no 'Requested runtime' line ($(if ($staleUevr) { $staleUevr } else { 'not injected, or log not copied' }))" }
     elseif ($req -ne $want) { Add-Check FAIL runtime-request "wanted $want, UEVR requested $req" }
     else { Add-Check PASS runtime-request $req }
 
@@ -82,10 +94,27 @@ if ($noInject) {
 # 5. Run finished and cleaned up.
 $err = Find $run 'ERROR: (.*)$'
 if ($err) { Add-Check FAIL run-error $err.Matches[0].Groups[1].Value }
-if (Find $run 'game exited') { Add-Check PASS game-exit (Find $run 'game exited').Line.Substring(15) }
+if (Find $run '\] game exited \(code') { Add-Check PASS game-exit (Find $run '\] game exited \(code').Line.Substring(15) }
 elseif (-not $err) { Add-Check FAIL game-exit 'no "game exited" line' }
 if (Find $run 'CRASH folder') { Add-Check FAIL crash ((Find $run 'CRASH folder').Line.Substring(15) + ' (crash ledger in STATUS.md)') }
 else { Add-Check PASS crash 'no new crash folder' }
+# Fail-fast crashes (0xc0000409, e.g. the OpenXR quit crash) write no game crash folder: read the
+# Windows Application log (event 1000) between this run's first and last run.txt lines.
+try {
+    $day = [datetime]::ParseExact((Split-Path $RunDir -Leaf).Substring(0, 10), 'yyyy-MM-dd', $null)
+    $times = @($run | ForEach-Object { if ($_ -match '^\[(\d\d:\d\d:\d\d)') { $day + [timespan]::Parse($Matches[1]) } })
+    if ($times.Count -ge 2) {
+        $t1 = $times[-1]; if ($t1 -lt $times[0]) { $t1 = $t1.AddDays(1) }
+        $ev = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = $times[0]; EndTime = $t1.AddSeconds(30) } -ErrorAction SilentlyContinue |
+            Where-Object { $_.Message -match 'VotV-Win64-Shipping' })
+        if ($ev) {
+            $m = $ev[0].Message
+            $code = if ($m -match 'Exception code: (\S+)') { $Matches[1] } else { '?' }
+            $off = if ($m -match 'Fault offset: (\S+)') { $Matches[1] } else { '?' }
+            Add-Check FAIL win-crash "Windows event 1000 at $($ev[0].TimeCreated.ToString('HH:mm:ss')): $code at $off (crash ledger in STATUS.md)"
+        } else { Add-Check PASS win-crash 'no Windows crash event for the game during the run' }
+    }
+} catch { Add-Check UNSURE win-crash "could not read the Application log: $($_.Exception.Message)" }
 if (Find $run '^\[[^\]]+\] logs in ') { Add-Check PASS cleanup 'launcher cleanup finished' }
 elseif (Find $run 'recovered by') { Add-Check UNSURE cleanup ((Find $run 'recovered by').Line.Substring(15)) }
 else { Add-Check FAIL cleanup 'launcher cleanup did not finish (window closed early?); the next run recovers it' }
