@@ -18,7 +18,7 @@
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
 local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_style = 1, hands_scale = 1,
-              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 800, flash_lens_slot = -1, flash_model_x = -20 }
+              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 800, flash_copy_game = 1, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
 local function parse_cfg(text)
@@ -305,9 +305,24 @@ local function make_flashlight(pawn)
     pcall(function() mine:SetIESTexture(light.IESTexture) end)
     -- Run 17:19: the game light reads intensity 0.2 (unitless) with an IES profile; copying that gave no
     -- visible light. Our light uses its own brightness instead: flash_intensity (live), IES brightness off.
-    pcall(function() mine:SetUseIESBrightness(false) end)
+    -- flash_copy_game=1 (user 16:45: "can't you just copy the games default brightness?"): copy the game light's
+    -- IES brightness setup exactly (property writes plus setters), then log what our light ended up with.
+    if cfg.flash_copy_game ~= 0 then
+        pcall(function() mine.bUseIESBrightness = light.bUseIESBrightness end)
+        pcall(function() mine:SetUseIESBrightness(light.bUseIESBrightness) end)
+        pcall(function() mine.IESBrightnessScale = light.IESBrightnessScale end)
+        pcall(function() mine:SetIESBrightnessScale(light.IESBrightnessScale) end)
+    else
+        pcall(function() mine:SetUseIESBrightness(false) end)
+    end
     pcall(function() mine:SetSourceRadius(light.SourceRadius) end)
-    pcall(function() mine:SetIntensity(cfg.flash_intensity) end)
+    pcall(function() mine:SetIntensity(cfg.flash_copy_game ~= 0 and light.Intensity or cfg.flash_intensity) end)
+    pcall(function()
+        log(string.format("flashlight: game light IESbright %s scale %s IES %s | ours IESbright %s scale %s IES %s intensity %s units %s",
+            tostring(light.bUseIESBrightness), tostring(light.IESBrightnessScale), tostring(light.IESTexture and light.IESTexture:get_fname():to_string()),
+            tostring(mine.bUseIESBrightness), tostring(mine.IESBrightnessScale), tostring(mine.IESTexture and mine.IESTexture:get_fname():to_string()),
+            tostring(mine.Intensity), tostring(mine.IntensityUnits)))
+    end)
     pcall(function() mine:SetAttenuationRadius(light.AttenuationRadius) end)
     pcall(function() mine:SetOuterConeAngle(light.OuterConeAngle) end)
     pcall(function() mine:SetInnerConeAngle(light.InnerConeAngle) end)
@@ -331,9 +346,10 @@ local function sync_light()
     if g == nil or m == nil then return end
     local on = g:IsVisible()
     local gi = g.Intensity
-    if gi ~= nil and gi > 0 then g:SetIntensity(0) end
+    if gi ~= nil and gi > 0 then st.game_int = gi; g:SetIntensity(0) end
     if on ~= st.light_on then st.light_on = on; m:SetVisibility(on, false); log("flashlight light " .. (on and "on" or "off")) end
-    if m.Intensity ~= cfg.flash_intensity then m:SetIntensity(cfg.flash_intensity) end
+    local want = cfg.flash_copy_game ~= 0 and st.game_int or cfg.flash_intensity
+    if want ~= nil and m.Intensity ~= want then m:SetIntensity(want) end
 end
 
 local function make_torch_model(pawn)
