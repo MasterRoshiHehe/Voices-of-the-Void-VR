@@ -102,8 +102,12 @@ local function dist(a, b) local dx, dy, dz = a.X - b.X, a.Y - b.Y, a.Z - b.Z; re
 -- the head (UEVR aim method Head). Other Blueprint users of the camera manager (gravity gun trace, hotbar
 -- drop placement) follow the hand too, which is wanted. Counts are logged with the periodic line.
 local hook_stats = { calls = 0, moved = 0, max_off = 0 }
+local function alive(o) return o ~= nil and UEVR_UObjectHook.exists(o) end
 local function move_pcm_to_hand()
     if state.hand == nil or state.untracked or state.pawn == nil then return end
+    -- The hook can fire during a level change or respawn before the tick notices the new pawn: never touch a
+    -- component or pawn that no longer exists, or a pawn that isn't the current one.
+    if not alive(state.hand) or not alive(state.pawn) or api:get_local_pawn(0) ~= state.pawn then return end
     local pc = api:get_player_controller(0)
     local pcm = pc and pc.PlayerCameraManager
     if pcm == nil then return end
