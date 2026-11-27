@@ -32,18 +32,40 @@ Findings that decide the design:
    `get_joystick_axis`, `is_action_active`) and haptics, from Lua or a C++ plugin
    (`tools\UEVR\1.05\UEVR\include\uevr\API.h`).
 
+4. **Checked in the player Blueprint** (2026-11-27, game-internals thread, pak read; details in
+   `docs/GAME-INTERNALS.md` §8): mouse look is axis events `mouseX`/`mouseY` (bound in code) that
+   call `AddControllerYawInput`/`AddControllerPitchInput`, plus `MouseWheelAxis`. `mainPlayer_C`
+   handles these actions (pressed/released events): `drop`, `offhand`, `spawnmenu`, `alt`,
+   `throwPath`, `run`, `dismount`, `cheatmenu`, `rotate`, `crouch`, `jump`, `inventory`, `noclip`,
+   `forward`, `back`, `left`, `right`, `use`, `zoom`, `hotbar_1..9`, `superscreenshot`,
+   `flashlight`, `quicksave`, `undo`, `ragdoll`, `scrollUp`, `scrollDown`, `debugtp`, `lockObject`,
+   `backupsave`, `activateEquipment`, `fire`, `highlightNearby`, and raw keys `LeftMouseButton`,
+   `AnyKey`, `Escape`. Observable success flags on the pawn: `input_use`, `input_E`, `input_fire`,
+   `input_LMB`, `input_rotate`, `input_drop`, `input_crouch`, `input_scrollUp/Down`; held object
+   `grabbing_actor`; look target `lookAtActor`. **Aim ray:** every look/use/pick-up/carry ray comes
+   from `mainPlayer_C:arm` (camera manager location + forward); redirecting that one function to the
+   right hand is the recommended hand-aim route (GAME-INTERNALS.md §3).
+
 ### Action inventory (current bindings)
 
 | Context | Action (binding) |
 |---|---|
 | On foot | `Forward` W, `back` S, `Left` A, `Right` D, `Run` LShift, `Crouch` LCtrl, `Jump` Space, `Up` E / `Down` Q (ladder/fly, to confirm), `ragdoll` C, `noclip` V (debug) |
-| Hands/objects | `fire` LMB (grab/hold, to confirm), `use` E, `rotate` RMB (+mouse), `lockObject` MMB, `Drop` R, `offhand` T, `activateEquipment` LAlt, `containerPut` LShift, `scrollUp/Down` wheel, `throwPath` unbound |
+| Hands/objects | `use` E (pick up / grab / use; hold E = carry slabs, radial menu if enabled), `fire` LMB (throw while grabbing, use held item on keypads/keyholes, attack), `rotate` RMB (+mouse, while grabbing), `lockObject` MMB (fix in place), `Drop` R (press vs hold differ: place/hold vs to inventory, swapped by a setting; hold R + RMB + wheel = precise placement), `offhand` T, `activateEquipment` LAlt, `containerPut` LShift, `scrollUp/Down` wheel, `throwPath` unbound (shows throw arc) |
 | Items/HUD | `hotbar_1..10` 1-0, `inventory` Tab, `flashlight` F, `highlightNearby` G, `Zoom` X |
 | ATV | `atv_forward/back/left/right` WASD, `atv_brake` Space, `atv_turbo` LShift, `atv_lights` F, `atv_honk` LAlt, `atv_use` E, `atv_viewSteering` LCtrl, `atv_zoom` X, `atv_fall` C, `dismount` Esc |
 | Computers (keyboard stays) | `coord_*` WASD/Enter/LShift/LAlt/1-3, `radar_*` WASD/Q/E/Enter/LShift, `Commit` Enter, `NewRow` unbound, `Undo` Z |
 | System | `Pause` Esc, `quicksave` F5, `backupsave` F6, `LockMouse` F1, `spawnmenu` Q, `cheatmenu` Num0, `debugtp` Num., `superscreenshot`/`demosnow` unbound |
 
 "To confirm" = semantics from play knowledge, to be checked in a capability run (see §4).
+
+Semantics source (2026-11-27, links from the user): wiki.gg `Guides/Settings` (stub, edited
+2026-11-25) and `Gamemodes/Tutorial` (marked WIP / possibly outdated, edited 2026-11-22). They
+disagree on press vs hold R; T, G and containers aren't described. Timing-relevant settings: "E/R
+Hold initial delay" 0.0 s and "E/R Hold delay" 0.2 s (so button passthrough must keep real press
+length), "Release E instead of LMB for use interactions" (default on). Consequences for §2: grip = E
+is the natural grab; trigger = LMB is throw/use; B must pass R's hold length through unchanged.
+Default FOV 110 and "Panel FOV" 65 exist as settings (relevant to UEVR's FOV handling).
 
 ## 2. Proposed layout (Quest 3 Touch, right-handed)
 
@@ -53,10 +75,10 @@ so every context (on foot, ATV) behaves as on the keyboard and a rebind in the g
 | Controller | Sends (action) | Notes |
 |---|---|---|
 | Right hand pose | aim | Game aim follows the right controller (UEVR `VR_AimMethod=2`); grabs and pick-ups go where the hand points |
-| Right trigger | LMB (`fire`) | grab / hold / use; held while the trigger is held |
-| Right grip | E (`use`; ATV `atv_use`) | interact, pick up |
+| Right trigger | LMB (`fire`) | throw while grabbing, use held item on keypads/keyholes; held while held |
+| Right grip | E (`use`; ATV `atv_use`) | grab / pick up / interact; hold = carry |
 | A | Space (`Jump`; ATV brake) | |
-| B | R (`Drop`) | |
+| B | R (`Drop`) | press and hold keep their different meanings (place vs to inventory) |
 | Right stick left/right | snap turn 45° (existing UEVR setting) | one turn per push |
 | Right stick up/down | mouse wheel (`scrollUp/Down`) | whatever the wheel does in game |
 | Right stick click | F (`flashlight`; ATV lights) | |
