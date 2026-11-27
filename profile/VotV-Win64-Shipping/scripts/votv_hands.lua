@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20,
+local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_style = 1, hands_scale = 1,
               flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 5000, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
@@ -169,8 +169,71 @@ local function make_hand(pawn, side)
     pose_hand(side)
 end
 
+-- Hands, v4 "built" style (run 17:34, user: the game's first-person hands look "more like broken wii remotes").
+-- The game has no proper hand model (its body mesh has no arms; the first-person arms are blocky with no fingers),
+-- so each hand is built from the engine's always-loaded cube: a palm, four fingers in two segments and a thumb,
+-- under a frame that UEVR drives to the controller grip. Using separate finger parts also lets fingers curl
+-- later (grip/trigger, then physical button presses). Material: the game arms' own material, so the colour
+-- matches the game. Live: hands_style (1 built, 0 game arms), hands_scale, hands_x/y/z, hands_pitch/yaw/roll.
+local FINGERS = { -- y offset (cm, right hand), length of the two segments (cm)
+    { y = -2.7, a = 4.2, b = 3.2 }, { y = -0.9, a = 4.6, b = 3.4 }, { y = 0.9, a = 4.4, b = 3.2 }, { y = 2.7, a = 3.6, b = 2.6 } }
+local cube = nil
+local function part(pawn, parent, mat, x, y, z, sx, sy, sz, yaw)
+    local c = add_comp(pawn, "Class /Script/Engine.StaticMeshComponent")
+    if c == nil then return nil end
+    c:SetStaticMesh(cube)
+    if mat ~= nil then pcall(function() c:SetMaterial(0, mat) end) end
+    pcall(function() c:SetCollisionEnabled(0) end)
+    pcall(function() c:SetCastShadow(false) end)
+    local h = struct("ScriptStruct /Script/Engine.HitResult")
+    c:K2_AttachToComponent(parent, fname("None"), 0, 0, 0, false)
+    c:K2_SetRelativeLocation(vec(x, y, z), false, h, false)
+    c:K2_SetRelativeRotation(rot(0, yaw or 0, 0), false, h, false)
+    c:SetRelativeScale3D(vec(sx / 100, sy / 100, sz / 100))
+    return c
+end
+
+local function make_built_hand(pawn, side)
+    cube = cube or find("StaticMesh /Engine/BasicShapes/Cube.Cube")
+    if cube == nil then log("hands: engine cube mesh not loaded"); return end
+    local mat = nil
+    pcall(function() mat = pawn.arms:GetMaterial(0) end)
+    local root = add_comp(pawn, "Class /Script/Engine.SceneComponent")
+    local frame = add_comp(pawn, "Class /Script/Engine.SceneComponent")
+    if root == nil or frame == nil then log("hands: AddComponentByClass(SceneComponent) failed"); return end
+    st.hand_states[side] = mc_state(root, side)
+    frame:K2_AttachToComponent(root, fname("None"), 0, 0, 0, false)
+    local m = side == 1 and 1 or -1
+    local parts = {}
+    -- palm: 9 x 8 x 2.4 cm, centred a little forward of and below the grip point
+    parts[#parts + 1] = part(pawn, frame, mat, 1.5, 0, -2.5, 9, 8, 2.4)
+    for _, f in ipairs(FINGERS) do
+        parts[#parts + 1] = part(pawn, frame, mat, 6 + f.a / 2, m * f.y, -2.5, f.a, 1.6, 1.6)
+        parts[#parts + 1] = part(pawn, frame, mat, 6 + f.a + f.b / 2 + 0.2, m * f.y, -2.5, f.b, 1.5, 1.5)
+    end
+    -- thumb on the inner side, angled forward
+    parts[#parts + 1] = part(pawn, frame, mat, 2.5, -m * 5.2, -2.0, 5.5, 1.8, 1.8, -m * 35)
+    st.hands[side] = frame
+    st.hand_parts = st.hand_parts or {}
+    st.hand_parts[side] = parts
+    st.calibrated[side] = true
+    log(string.format("hands: built %s hand (%d parts) on the controller", side == 1 and "right" or "left", #parts))
+end
+
+local function pose_built(side)
+    local frame = st.hands[side]
+    if frame == nil then return end
+    local m = side == 1 and 1 or -1
+    local h = struct("ScriptStruct /Script/Engine.HitResult")
+    pcall(function()
+        frame:K2_SetRelativeLocation(vec(cfg.hands_x, m * cfg.hands_y, cfg.hands_z), false, h, false)
+        frame:K2_SetRelativeRotation(rot(cfg.hands_pitch, m * cfg.hands_yaw, m * cfg.hands_roll), false, h, false)
+        frame:SetRelativeScale3D(vec(cfg.hands_scale, cfg.hands_scale, cfg.hands_scale))
+    end)
+end
+
 local function calibrate_hand(side) end   -- v1 leftover, nothing to measure in v2
-local function apply_hand_offsets() for side = 0, 1 do pose_hand(side) end end
+local function apply_hand_offsets() for side = 0, 1 do if cfg.hands_style == 1 then pose_built(side) else pose_hand(side) end end end
 
 -- Run 16:55 (user): "my player body is stuck to my left hand" with only the flashlight attached, so moving the
 -- game's own light_R drags other parts of the player with it. The game's light stays where it is (dark: its
@@ -256,7 +319,10 @@ local function setup(pawn)
     st.light, st.light_state, st.torch, st.torch_state, st.torch_vis = nil, nil, nil, nil, nil
     st.game_light, st.light_on, st.light_int = nil, nil, 0
     if not libs() then log("setup: Kismet libraries not found"); return end
-    if cfg.hands_show ~= 0 then make_hand(pawn, 1); make_hand(pawn, 0) end
+    if cfg.hands_show ~= 0 then
+        if cfg.hands_style == 1 then make_built_hand(pawn, 1); make_built_hand(pawn, 0); apply_hand_offsets()
+        else make_hand(pawn, 1); make_hand(pawn, 0) end
+    end
     if cfg.flash_on ~= 0 then make_flashlight(pawn) end
 end
 
@@ -281,7 +347,7 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
                 st.torch:K2_SetRelativeRotation(rot(0, cfg.flash_model_yaw, 0), false, struct("ScriptStruct /Script/Engine.HitResult"), false)
                 st.torch:K2_SetRelativeLocation(vec(cfg.flash_model_x, 0, 0), false, struct("ScriptStruct /Script/Engine.HitResult"), false)
             end) end
-            for side = 0, 1 do if st.hands[side] then pcall(function() st.hands[side]:SetVisibility(cfg.hands_show ~= 0, false) end) end end
+            for side = 0, 1 do if st.hands[side] then pcall(function() st.hands[side]:SetVisibility(cfg.hands_show ~= 0, true) end) end end
         end
         -- flashlight model: create once the mesh is loaded, then show it only while the light is on
         if cfg.flash_on ~= 0 and cfg.flash_model ~= 0 and st.torch == nil and st.t - st.retry > 3 then
