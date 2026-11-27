@@ -1,0 +1,23 @@
+id basic_buttons
+# Setup: in gameplay (any save), standing, nothing held. Copy to the UEVR profile folder as votv_driver.txt.
+# Expect in log.txt (probe lines, each within ~200 ms of the plugin's "down" line):
+#   r_grip  -> [votv-ctl] down E      then [votv-probe] input_use=true / input_E=true, then false on release
+#   rt=1    -> down LeftMouseButton   then input_fire=true or input_LMB=true, then false
+#   x       -> down LeftControl       then input_crouch=true, then false
+#   r_thumb -> down F                 then flashlight toggles; a second tap toggles it back
+#   ly=1    -> down W                 then moving=true, then false after release
+#   no "SENDINPUT FAILED", no "blocked: focus" during the scenario
+0
+500 r_grip
+800
+1500 rt=1
+1800
+2500 x
+3000
+3500 r_thumb
+3700
+4500 r_thumb
+4700
+5500 ly=1
+7000
+8000
