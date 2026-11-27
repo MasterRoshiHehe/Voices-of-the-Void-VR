@@ -15,7 +15,7 @@ session (or the other agent) picks up the work.
 - Publisher guidance and chosen scope: [dated sources in RESEARCH.md; user decision and unknowns]
 - Launch for testing (2026-11-27 03:25: one launcher, loads -Controls -Pointer): `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
-- Who owns the game install right now: **controls thread** (from 2026-11-27 03:31, solo check of the full build while the user is away; releases by 04:30)
+- Who owns the game install right now: nobody (controls thread released it 2026-11-27 03:36; menu thread next)
 
 ## Rendering compatibility
 
@@ -76,6 +76,11 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 | 2026-11-27 00:39:22, 00:47:26, 00:57:09, 01:02:32, 01:07:06, 01:10:38 | same: 0xc0000409 (fail-fast) at 0x7ff82415c28f, module unknown (Application log event 1000) | runs 00:28, 00:43, 00:55, 01:01, 01:05, 01:09 | 5e690d8f, UEVR 1.05, **OpenXR (VDXR) only** | quitting the game, every time | Exit-time crash on UEVR OpenXR shutdown (not Lua: first two runs had no scripts). Gameplay unaffected; saves made before quitting are fine as far as known. Owner: runtime thread. |
 
 ## Log
+
+### 2026-11-27 Claude (controls thread): solo check not possible while the headset is off (run 03:31)
+
+- Run `logs/2026-11-27_03-31-*` (`-Controls -Pointer`, 60 s inject delay, menus clicked from the PC while the user was away). UEVR injected at 03:32:11 but **`Could not create openxr system: XR_ERROR_FORM_FACTOR_UNAVAILABLE`**: Virtual Desktop had no headset connected, so the framework never initialized and **no Lua script ran** (0 "Running script" lines). The marks plugin loaded (`[votv-mark] start`). Clicks in the 2D main menu worked after injection (Start game opened the mode dialog). The hand hook, hands and flashlight can't be checked without the headset streaming. Game closed; plugins removed.
+- Conclusion: solo runs need the Quest connected in VD (it can lie on the desk if it stays awake). Otherwise the next check is the user's run.
 
 ### 2026-11-27 Claude (controls thread): hands and hand-held flashlight landed (dev 1d19ee2), not run in game
 
