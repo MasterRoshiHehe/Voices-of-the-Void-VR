@@ -344,8 +344,15 @@ local function tick()
         log_widgets()
     end
 
-    local pattern = setting_str("menu_map_pattern", "/game/menu%.menu"):lower()
-    local menu_now = wname:lower():find(pattern) ~= nil
+    -- Flat-menu worlds: the main menu and the start-up level with the OMEGA WARNING screen (preLoad; the
+    -- pointer is only active in 2D mode, so the warning screen needs it too: live session 2026-11-27 02:36).
+    -- menu_map_pattern (one Lua pattern) replaces the list if set.
+    local wl = wname:lower()
+    local menu_now = false
+    local custom = setting_str("menu_map_pattern", nil)
+    for _, pat in ipairs(custom and { custom:lower() } or { "/game/menu%.menu", "/game/maps/preload%.preload" }) do
+        if wl:find(pat) ~= nil then menu_now = true end
+    end
     if menu_now ~= in_menu then
         in_menu = menu_now
         sampled = {}

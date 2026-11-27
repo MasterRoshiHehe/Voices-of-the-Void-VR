@@ -84,6 +84,9 @@ struct Settings {
     float dot_r = 1.0f, dot_g = 0.15f, dot_b = 0.15f;
     bool left_handed = false;
     bool trace_hits = true;
+    bool dot_desktop = true;      // game backbuffer (PC monitor)
+    bool dot_framework = true;    // UEVR framework texture (headset, to be confirmed)
+    float dot_framework_scale = 1.0f;
 };
 
 class VotvPointer : public Plugin {
@@ -211,22 +214,40 @@ public:
             }
             ID3D11DeviceContext* ctx = nullptr;
             dev->GetImmediateContext(&ctx);
-            ID3D11DeviceContext1* ctx1 = nullptr;
-            if (ctx && rtv_ && SUCCEEDED(ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&ctx1)) && ctx1) {
-                const LONG cx = (LONG)std::lround(dot_u_ * (desc.Width - 1)), cy = (LONG)std::lround(dot_v_ * (desc.Height - 1));
-                const LONG h = std::max(2, s_.dot_px / 2);
-                const float black[4] = {0, 0, 0, 1};
-                const float col[4] = {s_.dot_r, s_.dot_g, s_.dot_b, 1};
-                D3D11_RECT outer{cx - h - 2, cy - h - 2, cx + h + 2, cy + h + 2};
-                D3D11_RECT inner{cx - h, cy - h, cx + h, cy + h};
-                ctx1->ClearView(rtv_, black, &outer, 1);
-                ctx1->ClearView(rtv_, col, &inner, 1);
-                ctx1->Release();
-            }
+            if (ctx && rtv_ && s_.dot_desktop) draw_dot(ctx, rtv_, desc.Width, desc.Height, s_.dot_px);
             if (ctx) ctx->Release();
             dev->Release();
         }
         bb->Release();  // rtv_tex_ is only compared, never dereferenced
+    }
+
+    // Live session 2026-11-27 02:37: the backbuffer dot showed on the PC monitor only, not in the headset (UEVR's
+    // 2D screen doesn't sample the final backbuffer). Second target: the texture UEVR hands plugins after it
+    // renders its own framework layer, which is composited into the headset view. Which one reaches the headset
+    // is logged once (sizes) and checked live; ptr_dot_desktop / ptr_dot_framework switch each target.
+    void on_post_render_vr_framework_dx11(ID3D11DeviceContext* context, ID3D11Texture2D* texture, ID3D11RenderTargetView* rtv) override {
+        if (!g_active.load() || !dot_visible_ || !s_.dot_framework || context == nullptr || texture == nullptr || rtv == nullptr) return;
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        if (!logged_framework_) {
+            logged_framework_ = true;
+            log("dot: framework texture %ux%u fmt %d (drawing there too)", desc.Width, desc.Height, (int)desc.Format);
+        }
+        draw_dot(context, rtv, desc.Width, desc.Height, std::max(4, (int)std::lround(s_.dot_px * desc.Width / 2560.0 * s_.dot_framework_scale)));
+    }
+
+    void draw_dot(ID3D11DeviceContext* ctx, ID3D11RenderTargetView* rtv, UINT w, UINT hgt, int px) {
+        ID3D11DeviceContext1* ctx1 = nullptr;
+        if (FAILED(ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&ctx1)) || ctx1 == nullptr) return;
+        const LONG cx = (LONG)std::lround(dot_u_ * (w - 1)), cy = (LONG)std::lround(dot_v_ * (hgt - 1));
+        const LONG h = std::max(2, px / 2);
+        const float black[4] = {0, 0, 0, 1};
+        const float col[4] = {s_.dot_r, s_.dot_g, s_.dot_b, 1};
+        D3D11_RECT outer{cx - h - 2, cy - h - 2, cx + h + 2, cy + h + 2};
+        D3D11_RECT inner{cx - h, cy - h, cx + h, cy + h};
+        ctx1->ClearView(rtv, black, &outer, 1);
+        ctx1->ClearView(rtv, col, &inner, 1);
+        ctx1->Release();
     }
 
     void on_device_reset() override {
@@ -275,6 +296,9 @@ private:
         d("ptr_wheel_repeat_ms", n.wheel_repeat_ms);
         i("ptr_dot_px", n.dot_px);
         b("ptr_trace_hits", n.trace_hits);
+        b("ptr_dot_desktop", n.dot_desktop);
+        b("ptr_dot_framework", n.dot_framework);
+        f("ptr_dot_framework_scale", n.dot_framework_scale);
         auto ckv = parse_kv(cp);
         auto lh = ckv.find("ctl_left_handed");
         n.left_handed = lh != ckv.end() && (lh->second == "1" || lh->second == "true");
@@ -310,6 +334,7 @@ private:
     std::atomic<bool> dot_visible_{false};
     std::atomic<float> dot_u_{0.5f}, dot_v_{0.5f};
     bool warned_renderer_ = false;
+    bool logged_framework_ = false;
     ID3D11RenderTargetView* rtv_ = nullptr;
     ID3D11Texture2D* rtv_tex_ = nullptr;
 };
