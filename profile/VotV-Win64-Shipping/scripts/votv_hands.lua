@@ -17,8 +17,8 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 1,
-              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 5000, flash_lens_slot = -1 }
+local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20,
+              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 5000, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
 local function parse_cfg(text)
@@ -77,7 +77,10 @@ end
 
 -- Hands, v3 (run 17:25, user: "white boxes ... only rendered in one eye ... nothing that resembles hands").
 -- v2 used the first-person arms mesh, whose viewmodel material and helper bones don't suit a world-space copy.
--- v3 copies the player's own third-person body (pawn.playermodel, else mesh_playerVisible), with its materials,
+-- v3 can copy the player's third-person body, but run 17:30 showed it has no arms (bones: lowlegs thighs pelvis
+-- chest head head_end), so the default source is back to the first-person arms (hands_source=0), whose hands are
+-- the game's own low-poly white gloves; the per-eye flicker is addressed with a larger bounds scale.
+-- (Source 1: pawn.playermodel, else mesh_playerVisible), with its materials,
 -- and keeps only one hand: the bone tree is read from the mesh, the hand bone is found by name, and every bone
 -- outside that hand's subtree is shrunk to 1% and parked on the hand, so arms and body collapse inside it.
 -- The hand bone sits at the component origin, which UEVR drives to the controller grip.
@@ -149,7 +152,7 @@ local function make_hand(pawn, side)
     pcall(function() local n = src:GetNumMaterials(); for i = 0, n - 1 do comp:SetMaterial(i, src:GetMaterial(i)) end end)
     pcall(function() comp:SetCollisionEnabled(0) end)
     pcall(function() comp:SetCastShadow(false) end)
-    pcall(function() comp:SetBoundsScale(4) end)   -- the shrunk pose is far from the ref pose; avoid per-eye culling
+    pcall(function() comp:SetBoundsScale(cfg.hands_bounds) end)   -- the shrunk pose is far from the ref pose; avoid per-eye culling
     st.hands[side] = comp
     st.hand_states[side] = mc_state(comp, side)
     st.calibrated[side] = true
@@ -237,6 +240,9 @@ local function make_torch_model(pawn)
     if st.light ~= nil then
         comp:K2_AttachToComponent(st.light, fname("None"), 0, 0, 0, false)   -- keep relative location/rotation/scale
         comp:K2_SetRelativeRotation(rot(0, cfg.flash_model_yaw, 0), false, struct("ScriptStruct /Script/Engine.HitResult"), false)
+        -- Run 17:30: the model's top rendered white. Its only material is the normal inst_flashlight, so the
+        -- likely cause is our light sitting inside the model and blowing it out. Keep the model behind the light.
+        comp:K2_SetRelativeLocation(vec(cfg.flash_model_x, 0, 0), false, struct("ScriptStruct /Script/Engine.HitResult"), false)
     else
         st.torch_state = mc_state(comp, cfg.flash_hand)
     end
@@ -271,7 +277,10 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
         if cfg._dirty then cfg._dirty = false; apply_hand_offsets()
             if st.light_state then st.light_state:set_hand(cfg.flash_hand); set_offset(st.light_state, cfg.flash_x, cfg.flash_y, cfg.flash_z) end
             if st.torch_state then st.torch_state:set_hand(cfg.flash_hand) end
-            if st.torch and st.torch_state == nil then pcall(function() st.torch:K2_SetRelativeRotation(rot(0, cfg.flash_model_yaw, 0), false, struct("ScriptStruct /Script/Engine.HitResult"), false) end) end
+            if st.torch and st.torch_state == nil then pcall(function()
+                st.torch:K2_SetRelativeRotation(rot(0, cfg.flash_model_yaw, 0), false, struct("ScriptStruct /Script/Engine.HitResult"), false)
+                st.torch:K2_SetRelativeLocation(vec(cfg.flash_model_x, 0, 0), false, struct("ScriptStruct /Script/Engine.HitResult"), false)
+            end) end
             for side = 0, 1 do if st.hands[side] then pcall(function() st.hands[side]:SetVisibility(cfg.hands_show ~= 0, false) end) end end
         end
         -- flashlight model: create once the mesh is loaded, then show it only while the light is on
