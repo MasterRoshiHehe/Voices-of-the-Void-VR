@@ -266,7 +266,7 @@ switch ($Action) {
         if ($Push) { Sync-Dev }
         # pick up the branch from origin if it was pushed from elsewhere (or is ahead there)
         $env:GCM_INTERACTIVE = 'never'
-        & git fetch -q origin "+refs/heads/${Branch}:refs/remotes/origin/$Branch" 2>$null
+        cmd /c "git fetch -q origin +refs/heads/${Branch}:refs/remotes/origin/$Branch 2>nul"   # cmd: a native stderr line under -ErrorAction Stop would abort PowerShell 5.1
         $remoteFeat = Get-Blob "refs/remotes/origin/$Branch"
         $feat = Get-Ref $Branch
         if ($remoteFeat) {
