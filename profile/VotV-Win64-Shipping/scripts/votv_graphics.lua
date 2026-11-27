@@ -4,25 +4,29 @@
 -- itself sets, whether its settings code re-applies values, and what each change costs per frame, per scene.
 -- By default this script only READS: it changes nothing about rendering unless gfx_override_enable=1.
 --
--- Settings (live, re-read every second): scripts\votv_settings.txt, one "key=value" per line, gfx_ prefix.
---   gfx_log_interval_s=10       periodic cvar dump + frame-time summary (seconds)
---   gfx_reapply_interval_s=2    how often overrides are checked and re-applied if the value differs
---   gfx_override_enable=0       master switch for the gfx_set lines (0 = probe only)
---   gfx_set r.MotionBlurQuality=0   any number of these; only applied while gfx_override_enable=1
--- Missing file or key = the default above. Lines starting with # are ignored.
--- Log lines start with "[votv-gfx]" in the profile's log.txt.
+-- Live settings: scripts\votv\settings.lua (shared Lua module returning a table; re-read every second;
+-- missing file or key = the default):
+--   gfx_log_interval_s = 10        periodic cvar dump + frame-time summary (seconds, min 1)
+--   gfx_reapply_interval_s = 2     how often overrides are checked and re-applied if the value differs (min 0.5)
+--   gfx_override_enable = 0        master switch for gfx_set (0 = probe only)
+--   gfx_set = { ["r.MotionBlurQuality"] = 0 }   cvar -> number; only applied while gfx_override_enable = 1
+-- Log lines go to UEVR's log.txt via uevr.params.functions.log_info, prefixed "[votv-gfx]".
 --
 -- Frame times come from on_pre_engine_tick's delta (engine delta seconds: affected by the game's max-delta
 -- clamp and time dilation, not a GPU or compositor measurement). Use it to compare scenes and A/B runs, and
 -- confirm headline numbers with an external capture.
 --
--- Only UEVR-provided APIs are used (uevr.*, fs); UEVR's Lua has no os/io. Everything runs inside pcall.
+-- Only UEVR-provided APIs are used (uevr.*, require, debug.getinfo); UEVR 1.05's Lua has no fs/io/os and
+-- print() does not reach log.txt (both found by the menu thread, STATUS.md 2026-11-27). Everything runs in pcall.
 
 local api = uevr.api
-local SETTINGS = "$scripts/votv_settings.txt"
 local TAG = "[votv-gfx] "
 
-local function log(s) print(TAG .. s) end
+local function log(s)
+    local msg = TAG .. tostring(s)
+    local ok = pcall(function() uevr.params.functions.log_info(msg) end)
+    if not ok then pcall(print, msg) end
+end
 
 local function try(f, fallback)
     local ok, v = pcall(f)
@@ -38,40 +42,55 @@ end
 
 -- ---------------------------------------------------------------- settings
 
+-- require() search path: UEVR 1.05 leaves package.path at the game's exe folder, so add this script's folder.
+local script_dir = nil
+pcall(function() script_dir = debug.getinfo(1, "S").source:match("^@(.*[\\/])") end)
+if script_dir ~= nil and not package.path:find(script_dir, 1, true) then
+    pcall(function() package.path = script_dir .. "?.lua;" .. package.path end)
+end
+
 local DEFAULTS = { gfx_log_interval_s = 10, gfx_reapply_interval_s = 2, gfx_override_enable = 0 }
 
--- Logs "settings file read: ok N lines / empty / failed" at startup and whenever that result changes,
--- so a silent fallback to the defaults can't hide (UEVR's fs path rooting is not confirmed yet).
+-- Logs "settings: ok ... / missing (...)" at startup and whenever that result changes, so a silent fallback
+-- to the defaults can't hide.
 local last_read_status = nil
-
 local function note_read_status(status)
     if status ~= last_read_status then
         last_read_status = status
-        log("settings file read (" .. SETTINGS .. "): " .. status)
+        log("settings (scripts/votv/settings.lua): " .. status)
     end
 end
 
 local function read_settings()
     local s = { overrides = {} }
     for k, v in pairs(DEFAULTS) do s[k] = v end
-    local ok, text = pcall(function() return fs.read(SETTINGS) end)
-    if not ok then note_read_status("failed (" .. tostring(text) .. ")"); return s end
-    if type(text) ~= "string" or text == "" then note_read_status("empty"); return s end
-    local nlines = 0
-    for _ in text:gmatch("[^\r\n]+") do nlines = nlines + 1 end   -- non-empty lines
-    note_read_status("ok " .. nlines .. " lines")
-    for raw in (text .. "\n"):gmatch("([^\r\n]*)\r?\n") do
-        local line = raw:match("^%s*(.-)%s*$")
-        if line ~= "" and line:sub(1, 1) ~= "#" then
-            local cname, cval = line:match("^gfx_set%s+([%w%._]+)%s*=%s*(%-?[%d%.]+)$")
-            if cname then
-                table.insert(s.overrides, { name = cname, value = tonumber(cval), text = cval })
-            else
-                local k, v = line:match("^(gfx_[%w_]+)%s*=%s*(%-?[%d%.]+)$")
-                if k and DEFAULTS[k] ~= nil and tonumber(v) then s[k] = tonumber(v) end
+    local ok, t = pcall(function()
+        package.loaded["votv/settings"] = nil
+        return require("votv/settings")
+    end)
+    if not ok or type(t) ~= "table" then
+        note_read_status("missing (script dir " .. tostring(script_dir) .. "; " .. tostring(t) .. "): defaults, overrides off")
+        return s
+    end
+    for k, _ in pairs(DEFAULTS) do
+        local v = tonumber(t[k])
+        if v ~= nil then s[k] = v end
+    end
+    local names = {}
+    if type(t.gfx_set) == "table" then
+        for cname, cval in pairs(t.gfx_set) do
+            local v = tonumber(cval)
+            if type(cname) == "string" and v ~= nil then
+                local text = (math.type and math.type(v) == "integer") and string.format("%d", v) or tostring(v)
+                table.insert(s.overrides, { name = cname, value = v, text = text })
+                table.insert(names, cname .. "=" .. text)
             end
         end
+        table.sort(s.overrides, function(a, b) return a.name < b.name end)
+        table.sort(names)
     end
+    note_read_status(string.format("ok: log=%gs reapply=%gs override_enable=%d gfx_set={%s}",
+        s.gfx_log_interval_s, s.gfx_reapply_interval_s, s.gfx_override_enable, table.concat(names, " ")))
     if s.gfx_log_interval_s < 1 then s.gfx_log_interval_s = 1 end
     if s.gfx_reapply_interval_s < 0.5 then s.gfx_reapply_interval_s = 0.5 end
     return s
