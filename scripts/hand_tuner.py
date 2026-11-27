@@ -26,8 +26,9 @@ PRESETS = [("open", "Open hand (nothing pressed)"), ("trigger", "Trigger pulled"
            ("fist", "Grip + trigger (fist)"), ("thumb_rest", "Thumb resting on a button"),
            ("thumb_press", "Thumb pressing a button")]
 FINGERS = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
-DEFAULT_PRESETS = {"open": [0.1] * 5, "trigger": [0.1, 0.85, 0.1, 0.1, 0.1], "grip": [0.2, 0.1, 0.9, 0.9, 0.9],
-                   "fist": [0.6, 0.9, 0.9, 0.9, 0.9], "thumb_rest": [0.5, 0, 0, 0, 0], "thumb_press": [0.9, 0, 0, 0, 0]}
+DEFAULT_PRESETS = {"open": [0.4, 0.3, 0.45, 0.5, 0.5], "trigger": [0.4, 0.9, 0.45, 0.5, 0.5],
+                   "grip": [0.45, 0.3, 0.95, 0.95, 0.95], "fist": [0.7, 0.9, 0.95, 0.95, 0.95],
+                   "thumb_rest": [0.55, 0, 0, 0, 0], "thumb_press": [0.85, 0, 0, 0, 0]}
 SETTINGS = [  # key, label, low, high, resolution
     # finger bend itself comes from the game's Kerfur animations (0 = its open hand, 1 = its fist)
     ("hands_x", "Hand forward (cm)", -25, 25, 0.5), ("hands_y", "Hand sideways (cm)", -25, 25, 0.5),

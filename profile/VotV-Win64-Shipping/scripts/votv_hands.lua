@@ -652,7 +652,8 @@ local function apply_fingers(side)
             if game_poses ~= nil and game_poses[chain[1]] ~= nil then
                 for k = 1, 3 do
                     local g = game_poses[chain[k]]
-                    local curlT = kml:MakeTransform(vec(0, 0, 0), quat_to_rot(slerp(g.open, g.fist, c)), vec(1, 1, 1))
+                    -- open = the rig's straight reference pose: the givePaper frame fans the fingers into a claw (marks 20:09)
+                    local curlT = kml:MakeTransform(vec(0, 0, 0), quat_to_rot(slerp({ 0, 0, 0, 1 }, g.fist, c)), vec(1, 1, 1))
                     local newc = kml:ComposeTransforms(kml:ComposeTransforms(curlT, rest[k]), pt)
                     comp:SetBoneTransformByName(fname(chain[k]), newc, COMP)
                     pt = newc
