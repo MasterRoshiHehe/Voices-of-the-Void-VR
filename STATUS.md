@@ -16,6 +16,7 @@ session (or the other agent) picks up the work.
 - Launch for testing: `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
 - Who owns the game install right now: nobody (menu thread released it 2026-11-27 02:16 after the flat click test). Next in queue: runtime thread (UEVR nightly quit-crash A/B), then controls retest.
+- Who owns the game install right now: nobody (runtime thread released it 2026-11-27 02:23 after the nightly A/B; controls retest next)
 
 ## Rendering compatibility
 
@@ -75,6 +76,18 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 | 2026-11-27 00:39:22, 00:47:26, 00:57:09, 01:02:32, 01:07:06, 01:10:38 | same: 0xc0000409 (fail-fast) at 0x7ff82415c28f, module unknown (Application log event 1000) | runs 00:28, 00:43, 00:55, 01:01, 01:05, 01:09 | 5e690d8f, UEVR 1.05, **OpenXR (VDXR) only** | quitting the game, every time | Exit-time crash on UEVR OpenXR shutdown (not Lua: first two runs had no scripts). Gameplay unaffected; saves made before quitting are fine as far as known. Owner: runtime thread. |
 
 ## Log
+
+### 2026-11-27 Claude (runtime thread): UEVR nightly doesn't fix the quit crash; UEVR menu closed at start
+
+- **Nightly A/B:** UEVR nightly-01143 (github.com/praydog/UEVR-nightly, published 2026-08-30, `uevr.zip` SHA-256 4cd6932d...c6d8 = release digest, user OK 02:10) in `tools\UEVR\nightly-01143\UEVR\` (not in git). Its injector got its own saved settings with OpenXR selected (`UEVRInjector_Path_m212kktlfdwucst4chyfcs0ykmee4tad`; the injector first shows a "VD Warning" dialog, dismissed via UI Automation). Run `logs\2026-11-27_02-20-07` (`-UevrDir <nightly> -InjectorSettingsDir <that> -Feature quit-crash-nightly -MaxRunMinutes 2`): OpenXR on Quest 3 PASS, DX11, no SteamVR. **Same quit crash** (win-crash FAIL 02:22:39, 0xc0000409 at ...c28f). So 1.05 vs nightly makes no difference, and the crash isn't fixed by a newer UEVR. Stay on 1.05. Remaining ideas: report it to Virtual Desktop (crash in its runtime's LibOVRRT code at process exit), or accept it as a known exit-only crash if nothing is lost at quit (asked the user).
+- **UEVR menu closed at start** (user 02:11: "please stop that UEVR menu from being displayed whenever I start the game"): UEVR applies `FrameworkConfig_MenuOpen=false` only when `FrameworkConfig_RememberMenuState=true` (inferred: the baseline had MenuOpen=false with Remember=false and the menu still opened). `run-vr.ps1` sets both every run (new `Set-ProfileKey`) in the shared AppData profile, so 1.05 and nightly on both runtimes are covered; the repo baseline now has RememberMenuState=true. Run 02:20: no UEVR menu on the desktop window 25 s after injection (`window_menu_check.png`, `scripts\snap-window.ps1`), but there's no picture of the menu open to compare against, so the user's headset look is the real check.
+- `check-run.ps1`: `vulkan-1.dll` is loaded even on DX11 runs (02:10 run), so the `vulkan` check now FAILs only when no DirectX hook was seen.
+### 2026-11-27 Claude (mark thread): in-headset marks built, not yet run in game
+
+- New, separate UEVR plugin `src/votv_marks/` -> `build\votv_marks\votv_marks.dll` (`scripts\build-marks.ps1`; offline test `mark_logic_test` 15/15 PASS). Button: **left grip + right stick click** (mirrored when left-handed), or **F8**. Writes `<repo>\marks\<yyyy-MM-dd_HH-mm-ss_mmm>\mark.json` + `mirror.jpg` (+ both eyes via the mirror tool on SteamVR runs). Design and fields: CONTROLS.md "Marks". `marks/` gitignored.
+- Lua was not usable for this: UEVR 1.05 Lua has no file access (controls thread's finding), and there's no Lua->plugin event in 1.05. All UObject reads/traces are by reflection (KismetSystemLibrary.LineTraceSingle + GameplayStatics.BreakHitResult, offsets from the UFunction's properties), on the game thread; capture and file writes on a worker thread (max 2 in flight).
+- **Touched other threads' files:** `src/votv_controls/mapper.hpp` (layer + right stick click = action `mark`, no key; was `flashlight`) and a test in `mapper_test.cpp` (16/16 PASS, built in a scratch dir, controls DLL not rebuilt). Per the coordinator those two land through feature/motion-controllers, not my branch. `run-vr.ps1`: opt-in `-Marks` switch, install/remove of votv_marks.dll (removed in finally). `check-run.ps1`: INFO lines listing the run's marks above VERDICT, plus `<run>\marks.txt` and `<run>\mark_log_context.txt`; checked on run 02:01 with a fixture mark (deleted afterwards). New helper `scripts\marks.ps1` (also `-Note "text"` for the newest mark).
+- Not done: in-game run (lock held by the runtime thread at 02:20). Next: a run with `-Marks` (can ride along with the controls retest): press the chord and F8 once each, check mark.json fields and mirror.jpg, and that no F reaches the game. No in-headset confirmation (no overlay API); haptics off.
 
 ### 2026-11-27 Claude (menu thread): flat click test 02:13 -> injected clicks DO press menu buttons
 

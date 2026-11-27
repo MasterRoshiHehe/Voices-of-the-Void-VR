@@ -83,7 +83,8 @@ if ($noInject) {
     $mods = Find $run 'render modules in game: (.*)$'
     if ($largs -match '(?i)\s-(vulkan|opengl|sm5vulkan)\b') { Add-Check FAIL rhi-args "launched with a non-DX flag: $largs" }
     elseif ($launch -and $largs -notmatch '(?i)\s-(d3d11|dx11|d3d12|dx12)\b') { Add-Check FAIL rhi-args "no -d3d11/-d3d12 in the launch arguments, so the game's saved RHI (maybe Vulkan) applies: $largs" }
-    if ($mods -and $mods.Matches[0].Groups[1].Value -match 'vulkan-1') { Add-Check FAIL vulkan "vulkan-1.dll loaded in the game ($($mods.Matches[0].Groups[1].Value)): Vulkan RHI, which UEVR can't hook" }
+    # vulkan-1.dll is loaded even on DX11 runs (seen 02:10 run), so it only means Vulkan when nothing DX was hooked.
+    if ($mods -and $mods.Matches[0].Groups[1].Value -match 'vulkan-1' -and -not (Find $uevr 'Hooked DirectX 1[12]')) { Add-Check FAIL vulkan "vulkan-1.dll loaded in the game ($($mods.Matches[0].Groups[1].Value)): Vulkan RHI, which UEVR can't hook" }
     if (Find $uevr 'Hooked DirectX 11') { Add-Check PASS rhi 'DirectX 11 hooked (pinned with -d3d11)' }
     elseif (Find $uevr 'Hooked DirectX 12') { Add-Check UNSURE rhi 'only DirectX 12 hooked' }
     else { Add-Check FAIL rhi 'no DirectX hook in the UEVR log' }
@@ -163,6 +164,22 @@ $rtKey = if ($want) { $want } elseif (-not $noInject -and (Find $uevr 'Requested
 $rtName = switch ($rtKey) { 'openxr_loader.dll' { 'OpenXR' } 'openvr_api.dll' { 'SteamVR' } default { 'unknown' } }
 $out.Insert(0, "run $(Split-Path $RunDir -Leaf) | runtime $rtName | feature $feature")
 $out.Add("VERDICT $word ($fails failed, $unsure unsure of $($out.Count - 1) checks)")
+# Marks dropped during the run (votv_marks.dll; info only, not a check): listed above the VERDICT line,
+# with <run>\marks.txt and <run>\mark_log_context.txt (UEVR log 7 s before to 3 s after each mark).
+try {
+    . (Join-Path $PSScriptRoot 'marks.ps1')
+    $mday = [datetime]::ParseExact((Split-Path $RunDir -Leaf).Substring(0, 19), 'yyyy-MM-dd_HH-mm-ss', $null)
+    $mlast = (Get-Item $runTxt).LastWriteTime
+    if (-not $finished) { $mlast = Get-Date }
+    $marks = @(Get-MarksBetween $mday $mlast.AddSeconds(5))
+    $mlines = @("INFO   marks            $($marks.Count) new mark(s) in $script:MarksDir$(if ($marks.Count) { '; context: ' + (Join-Path $RunDir 'mark_log_context.txt') })")
+    foreach ($m in $marks) { $mlines += "INFO   mark             $($m.Time.ToString('HH:mm:ss')) $($m.Path) | $($m.Summary)$(if ($m.Note) { ' | note: ' + $m.Note })" }
+    if ($marks.Count) {
+        $mlines | Set-Content -Path (Join-Path $RunDir 'marks.txt') -Encoding utf8
+        Write-MarkLogContext $marks $uevrLog (Join-Path $RunDir 'mark_log_context.txt')
+    }
+    foreach ($l in $mlines) { $out.Insert($out.Count - 1, $l) }
+} catch { $out.Insert($out.Count - 1, "INFO   marks            could not list marks: $($_.Exception.Message)") }
 $out | Set-Content -Path (Join-Path $RunDir 'verdict.txt') -Encoding utf8
 $out | ForEach-Object { Write-Host $_ }
 exit $(if ($fails) { 1 } elseif ($unsure) { 2 } else { 0 })
