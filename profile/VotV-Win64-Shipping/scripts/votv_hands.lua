@@ -680,6 +680,35 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
 end)
 
 
+
+-- Pose presets per button state (user 19:19). The controls plugin owns them (it reads the buttons and keeps
+-- votv_hand_presets.txt); it sends them here as "votv_presets" events, and the panel edits them and saves by
+-- logging "PRESETS SAVE ..." (Lua can't write files; the plugin picks the line up within a second and writes the file).
+local PRESET_NAMES = { "open", "trigger", "grip", "fist", "thumb_rest", "thumb_press" }
+local PRESET_LABELS = { "open hand (nothing pressed)", "trigger pulled", "grip held", "grip + trigger (fist)",
+                        "thumb resting on a button", "thumb pressing a button" }
+local presets = {}
+local preset_sel, preview = 1, false
+pcall(function()
+    uevr.sdk.callbacks.on_lua_event(function(name, data)
+        if name ~= "votv_presets" then return end
+        for line in tostring(data):gmatch("[^\n]+") do
+            local k, rest = line:match("^(%w+_?%w*)=(.*)$")
+            if k then
+                local v = {}
+                for n in rest:gmatch("%-?[%d%.]+") do v[#v + 1] = tonumber(n) end
+                if #v == 5 and (not preview or presets[k] == nil) then presets[k] = v end
+            end
+        end
+    end)
+end)
+local function show_preview()
+    local p = presets[PRESET_NAMES[preset_sel]]
+    if p == nil then return end
+    for side = 0, 1 do for f = 1, 5 do curls[side][f] = p[f] end end
+    st.curl_force = true
+end
+
 -- Hand debug panel (user 2026-11-27 19:17: "an ingame debug menu where I could set the hand poses myself", as in
 -- the Sims 4 VR mod). Drawn in UEVR's own menu (open it in VR with both stick clicks, or Insert on the keyboard;
 -- the panel is under the Lua scripts section). Every slider applies at once. "Manual pose" freezes the fingers on
@@ -707,6 +736,30 @@ local ui_ok = pcall(function()
                     if ch then curls[side][f] = nv; st.curl_force = true end
                 end
             end
+        end
+        imgui.text("Pose presets per button state")
+        local cp, nv = imgui.checkbox("Preview / edit preset (shows it on both hands)", preview)
+        if cp then preview = nv; st.manual = nv; if nv then show_preview() end end
+        local cs, sel = imgui.slider_int("preset", preset_sel, 1, #PRESET_NAMES)
+        if cs then preset_sel = sel; if preview then show_preview() end end
+        imgui.text("  " .. PRESET_LABELS[preset_sel])
+        local p = presets[PRESET_NAMES[preset_sel]]
+        if p ~= nil then
+            local fn = { "thumb", "index", "middle", "ring", "pinky" }
+            for f = 1, 5 do
+                local ch, v2 = imgui.slider_float("preset " .. fn[f], p[f], 0, 1)
+                if ch then p[f] = v2; if preview then show_preview() end end
+            end
+            if imgui.button("Save presets") then
+                local parts = {}
+                for _, n in ipairs(PRESET_NAMES) do
+                    local q = presets[n]
+                    if q then parts[#parts + 1] = string.format("%s=%.2f %.2f %.2f %.2f %.2f", n, q[1], q[2], q[3], q[4], q[5]) end
+                end
+                log("PRESETS SAVE " .. table.concat(parts, ";"))
+            end
+        else
+            imgui.text("  (waiting for the presets from the controls plugin)")
         end
         imgui.text("Bend (degrees at full curl)")
         fslider("knuckle (MCP)", "hands_mcp", 0, 130)
