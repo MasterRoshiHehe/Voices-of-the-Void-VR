@@ -1,4 +1,5 @@
 ctl_enabled=1
+ctl_hand_tracking=1
 ctl_left_handed=0
 ctl_aim_method=1
 hand_aim=1
