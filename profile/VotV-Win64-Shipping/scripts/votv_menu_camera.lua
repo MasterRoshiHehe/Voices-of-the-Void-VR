@@ -307,6 +307,113 @@ local function restore_menu_widgets()
     hidden = {}
 end
 
+-- Game-drawn cursor dot (UMG, green) for the flat menu. The dot drawn by votv_pointer.dll into D3D textures never
+-- reached the headset (live 2026-11-27 02:36/02:39), but the game's own UI is exactly what UEVR shows on the
+-- 2D screen. So: a small Image widget added to the visible menu widget's root canvas, moved every frame to
+-- where the game sees the mouse (WidgetLayoutLibrary.GetMousePositionOnViewport). The pointer plugin moves
+-- the OS mouse, so the dot shows where a click would land, by construction.
+-- Switch: the pointer plugin sends "votv_ptr" Lua events with "umg_dot=0/1" (from scripts\votv_pointer.txt,
+-- re-read every second); default on while the flat menu is shown. Logged once per widget it attaches to.
+local umg_dot_enabled = true
+local umg_dot_px = 14
+local dot = nil            -- { image=, slot=, host= } while attached
+local dot_fail_logged = {}
+local vec2_struct = nil
+local color_struct = nil
+
+local function struct_new(name)
+    local s = try(function() return api:find_uobject(name) end, nil)
+    if s == nil then return nil end
+    return try(function() return StructObject.new(s) end, nil)
+end
+
+local function vec2(x, y)
+    if vec2_struct == nil then vec2_struct = struct_new("ScriptStruct /Script/CoreUObject.Vector2D") end
+    if vec2_struct == nil then return nil end
+    vec2_struct.X = x
+    vec2_struct.Y = y
+    return vec2_struct
+end
+
+local function cdo(name)
+    local c = try(function() return api:find_uobject(name) end, nil)
+    return c and try(function() return c:get_class_default_object() end, nil) or nil
+end
+
+local function dot_fail(key, msg)
+    if not dot_fail_logged[key] then dot_fail_logged[key] = true; log("umg dot: " .. msg) end
+end
+
+local function remove_dot()
+    if dot ~= nil then
+        pcall(function() dot.image:RemoveFromParent() end)
+        log("umg dot: removed from " .. name_of(dot.host))
+        dot = nil
+    end
+end
+
+-- The visible menu-type widget to host the dot: ui_menu_C in the main menu, ui_disclaimer_C on the warning screen.
+local function find_host()
+    local ucls = try(function() return api:find_uobject("Class /Script/UMG.UserWidget") end, nil)
+    if ucls == nil then return nil end
+    local best = nil
+    for _, w in ipairs(try(function() return UEVR_UObjectHook.get_objects_by_class(ucls, false) end, {}) or {}) do
+        local n = name_of(w)
+        if (n:find("ui_menu_C", 1, true) or n:find("ui_disclaimer_C", 1, true))
+            and try(function() return w:IsInViewport() end, false) == true
+            and try(function() return w:IsVisible() end, false) == true then
+            best = w
+            if n:find("ui_disclaimer_C", 1, true) then break end  -- the warning screen sits on top of everything
+        end
+    end
+    return best
+end
+
+local function attach_dot(host)
+    local root = try(function() return host.WidgetTree.RootWidget end, nil)
+    if root == nil then dot_fail("noroot" .. name_of(host), "no root widget in " .. name_of(host)); return end
+    if not name_of(root):find("^CanvasPanel") then dot_fail("notcanvas" .. name_of(host), "root of " .. name_of(host) .. " is " .. name_of(root) .. ", not a CanvasPanel"); return end
+    local statics = cdo("Class /Script/Engine.GameplayStatics")
+    local img_cls = try(function() return api:find_uobject("Class /Script/UMG.Image") end, nil)
+    if statics == nil or img_cls == nil then dot_fail("cls", "GameplayStatics or Image class not found"); return end
+    local image = try(function() return statics:SpawnObject(img_cls, host.WidgetTree) end, nil)
+    if image == nil then dot_fail("spawn", "SpawnObject(Image) failed"); return end
+    local slot = try(function() return root:AddChildToCanvas(image) end, nil)
+    if slot == nil then dot_fail("add", "AddChildToCanvas failed"); return end
+    pcall(function() slot:SetSize(vec2(umg_dot_px, umg_dot_px)) end)
+    pcall(function() slot:SetZOrder(10000) end)
+    pcall(function() image:SetVisibility(3) end)  -- HitTestInvisible: never eats the click it shows
+    pcall(function()
+        if color_struct == nil then color_struct = struct_new("ScriptStruct /Script/CoreUObject.LinearColor") end
+        color_struct.R = 0.1; color_struct.G = 1.0; color_struct.B = 0.2; color_struct.A = 1.0  -- green (the plugin's D3D dot is red)
+        image:SetColorAndOpacity(color_struct)
+    end)
+    dot = { image = image, slot = slot, host = host }
+    log("umg dot: attached to " .. name_of(host) .. " (root " .. name_of(root) .. ")")
+end
+
+-- Once a second (from tick): attach/detach to the visible menu widget.
+local function check_dot_host(flat_menu)
+    if not (umg_dot_enabled and flat_menu) then remove_dot(); return end
+    local host = find_host()
+    if host == nil then remove_dot(); return end
+    if dot ~= nil and dot.host ~= host then remove_dot() end
+    if dot == nil then attach_dot(host) end
+end
+
+-- Every frame: follow the mouse.
+local wll_cdo = nil
+local function move_dot()
+    if dot == nil then return end
+    if wll_cdo == nil then wll_cdo = cdo("Class /Script/UMG.WidgetLayoutLibrary") end
+    local wll = wll_cdo
+    local engine = try(function() return api:get_engine() end, nil)
+    local world = try(function() return engine.GameViewport.World end, nil)
+    local pos = wll and world and try(function() return wll:GetMousePositionOnViewport(world) end, nil) or nil
+    if pos == nil then dot_fail("mouse", "GetMousePositionOnViewport returned nothing"); return end
+    pcall(function() dot.slot:SetPosition(vec2(pos.X - umg_dot_px / 2, pos.Y - umg_dot_px / 2)) end)
+end
+
 -- Menu state ---------------------------------------------------------------------------------------------
 local last_world, last_target = nil, nil
 local in_menu = false
@@ -372,6 +479,7 @@ local function tick()
         log((want2d and "menu: flat 2D screen on" or "stereo 3D (2D screen off)") .. " (" .. (ok and "ok" or "set_mod_value FAILED") .. ")")
         twod_applied = want2d
     end
+    check_dot_host(want2d)
 
     -- Hide the configured menu children until every name is found; give up after 10 scans (logged), since
     -- each scan walks every UMG widget in memory.
@@ -447,7 +555,17 @@ local ok_start, err_start = pcall(function()
         local ok, err = pcall(on_post, ...)
         if not ok then log_error("post view", err) end
     end)
+    uevr.sdk.callbacks.on_lua_event(function(name, data)
+        if name ~= "votv_ptr" then return end
+        local v = tostring(data):match("umg_dot=(%d)")
+        if v ~= nil then
+            local on = v == "1"
+            if on ~= umg_dot_enabled then umg_dot_enabled = on; log("umg dot " .. (on and "enabled" or "disabled") .. " by votv_pointer.txt") end
+        end
+    end)
     uevr.sdk.callbacks.on_pre_engine_tick(function(engine, delta)
+        local okm, errm = pcall(move_dot)
+        if not okm then log_error("umg dot", errm) end
         local ok, err = pcall(function()
             acc = acc + (delta or 0)
             if acc < 1.0 then return end

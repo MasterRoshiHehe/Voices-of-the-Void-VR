@@ -106,6 +106,7 @@ struct Settings {
     float dot_framework_scale = 1.0f;
     bool dot_ui = true;           // UEVR's UI render target (Slate / menus)
     bool dot_scene = true;        // UEVR's scene render target
+    bool dot_umg = true;          // tell the menu Lua script to draw its green UMG dot at the mouse
     bool calibrate = false;       // ptr_calibrate=1: trigger records the 4 screen corners, no clicks
     bool click = true;            // ptr_click=0: never click (pointing only)
 };
@@ -122,7 +123,11 @@ public:
 
     void on_pre_engine_tick(API::UGameEngine*, float) override {
         const double t = now_ms();
-        if (t - settings_t_ > 1000) { settings_t_ = t; load_settings(false); }
+        if (t - settings_t_ > 1000) {
+            settings_t_ = t;
+            load_settings(false);
+            API::get()->dispatch_lua_event("votv_ptr", s_.dot_umg ? "umg_dot=1" : "umg_dot=0");  // menu script's UMG dot switch
+        }
 
         std::string why;
         bool twod = false;
@@ -424,6 +429,7 @@ private:
         b("ptr_dot_desktop", n.dot_desktop);
         b("ptr_calibrate", n.calibrate);
         b("ptr_dot_ui", n.dot_ui);
+        b("ptr_dot_umg", n.dot_umg);
         b("ptr_dot_scene", n.dot_scene);
         b("ptr_click", n.click);
         b("ptr_dot_framework", n.dot_framework);
