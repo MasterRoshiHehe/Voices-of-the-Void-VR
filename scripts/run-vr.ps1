@@ -40,6 +40,7 @@ param(
     [switch]$ResetProfile,
     [switch]$NoInject,                         # flat run with the same launch path, for A/B
     [switch]$Controls,                         # install the motion-controller plugin (votv_controls.dll) for this run (opt-in while under test)
+    [switch]$Pointer,                          # install the flat-menu laser pointer (votv_pointer.dll, menu thread) for this run (opt-in while under test)
     [switch]$Marks,                            # install the marks plugin (votv_marks.dll: left grip + right stick click or F8 drops a mark into <repo>\marks\); opt-in until its first in-game check passes
     [switch]$DryRun                            # run every pre-launch check and fix, then stop without launching
 )
@@ -234,6 +235,16 @@ try {
     # Marks plugin (mark thread): screenshot + state JSON on a button, into <repo>\marks\. This run only.
     . (Join-Path $scriptDir 'marks.ps1')
     if (-not $Marks) { Remove-MarksPlugin $profileDir; Write-RunLog 'marks plugin: not installed (no -Marks)' } else { Install-MarksPlugin $profileDir ${function:Write-RunLog} }
+    # Flat-menu laser pointer (menu thread): build/votv_pointer/votv_pointer.dll -> profile plugins folder, this run
+    # only (removed in the finally block). Opt-in with -Pointer while it is under test.
+    $ptrDll = Join-Path $repo 'build\votv_pointer\votv_pointer.dll'
+    $ptrDst = Join-Path $profileDir 'plugins\votv_pointer.dll'
+    if (Test-Path $ptrDst) { Remove-Item $ptrDst -Force -ErrorAction SilentlyContinue }
+    if ($Pointer -and (Test-Path $ptrDll)) {
+        New-Item -ItemType Directory -Force (Split-Path $ptrDst) | Out-Null
+        Copy-Item $ptrDll $ptrDst -Force
+        Write-RunLog "pointer plugin installed: votv_pointer.dll sha256 $((Get-FileHash $ptrDll -Algorithm SHA256).Hash.Substring(0,12))"
+    } else { Write-RunLog "pointer plugin: not installed ($(if (-not $Pointer) { 'no -Pointer' } else { 'not built' }))" }
     # Runtime: the repo baseline is the source of truth (the injector rewrites the AppData copy).
     # -Runtime OpenVR is a per-run override (SteamVR parallel test); the default stays OpenXR and
     # is restored in the finally block.
@@ -406,6 +417,11 @@ finally {
     if (Test-Path $ctlDst2) { Remove-Item $ctlDst2 -Force -ErrorAction SilentlyContinue }
     $mkDst = Join-Path $profileDir 'plugins\votv_marks.dll'
     if (Test-Path $mkDst) { Remove-Item $mkDst -Force -ErrorAction SilentlyContinue }
+    # Pointer plugin: trace goes with the logs; the DLL leaves the profile with the run.
+    $ptrTrace = Join-Path $profileDir 'votv_pointer_trace.txt'
+    if (Test-Path $ptrTrace) { Move-Item $ptrTrace (Join-Path $runDir 'votv_pointer_trace.txt') -Force -ErrorAction SilentlyContinue }
+    $ptrDst2 = Join-Path $profileDir 'plugins\votv_pointer.dll'
+    if (Test-Path $ptrDst2) { Remove-Item $ptrDst2 -Force -ErrorAction SilentlyContinue }
     foreach ($f in @('log.txt', 'config.txt', 'cameras.txt', 'imgui.ini')) {
         $src = Join-Path $profileDir $f
         # log.txt only if UEVR wrote it during this run (else it is an older run's log: false PASS risk).
