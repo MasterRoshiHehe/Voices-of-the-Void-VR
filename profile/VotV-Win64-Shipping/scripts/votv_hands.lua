@@ -118,14 +118,37 @@ local function apply_hand_offsets()
     end
 end
 
+-- Run 16:55 (user): "my player body is stuck to my left hand" with only the flashlight attached, so moving the
+-- game's own light_R drags other parts of the player with it. The game's light stays where it is (dark: its
+-- intensity is moved to ours each tick) and our own SpotLight on the controller shines instead.
 local function make_flashlight(pawn)
     local light = nil
     pcall(function() light = pawn.light_R end)
     if light == nil then log("flashlight: pawn.light_R not found"); return end
-    st.light = light
-    st.light_state = mc_state(light, cfg.flash_hand)
+    local mine = add_comp(pawn, "Class /Script/Engine.SpotLightComponent")
+    if mine == nil then log("flashlight: AddComponentByClass(SpotLightComponent) failed"); return end
+    pcall(function() mine:SetIntensity(light.Intensity) end)
+    pcall(function() mine:SetAttenuationRadius(light.AttenuationRadius) end)
+    pcall(function() mine:SetOuterConeAngle(light.OuterConeAngle) end)
+    pcall(function() mine:SetInnerConeAngle(light.InnerConeAngle) end)
+    pcall(function() mine:SetLightColor(light:GetLightColor(), true) end)
+    pcall(function() mine:SetCastShadows(light.CastShadows) end)
+    st.game_light, st.light, st.light_int = light, mine, 0
+    st.light_state = mc_state(mine, cfg.flash_hand)
     set_offset(st.light_state, cfg.flash_x, cfg.flash_y, cfg.flash_z)
-    log("flashlight: light follows the " .. (cfg.flash_hand == 1 and "right" or "left") .. " controller")
+    log("flashlight: own light on the " .. (cfg.flash_hand == 1 and "right" or "left") .. " controller (game light left in place, dimmed)")
+end
+
+-- Each tick: our light is on when the game's is, and takes over its intensity (the game may change it: battery,
+-- hold-F beam modes); the game's light is kept at 0 so only ours shines.
+local function sync_light()
+    local g, m = st.game_light, st.light
+    if g == nil or m == nil then return end
+    local on = g:IsVisible()
+    local gi = g.Intensity
+    if gi ~= nil and gi > 0 then st.light_int = gi; g:SetIntensity(0) end
+    if on ~= st.light_on then st.light_on = on; m:SetVisibility(on, false) end
+    if st.light_int > 0 and m.Intensity ~= st.light_int then m:SetIntensity(st.light_int) end
 end
 
 local function make_torch_model(pawn)
@@ -142,7 +165,7 @@ local function make_torch_model(pawn)
     -- drives from the controller), turned by flash_model_yaw (live, default 180 degrees).
     if st.light ~= nil then
         comp:K2_AttachToComponent(st.light, fname("None"), 0, 0, 0, false)   -- keep relative location/rotation/scale
-        comp:K2_SetRelativeRotation(rot(0, cfg.flash_model_yaw, 0), false, nil, false)
+        comp:K2_SetRelativeRotation(rot(0, cfg.flash_model_yaw, 0), false, struct("ScriptStruct /Script/Engine.HitResult"), false)
     else
         st.torch_state = mc_state(comp, cfg.flash_hand)
     end
@@ -154,6 +177,7 @@ local function setup(pawn)
     st.pawn = pawn
     st.hands, st.hand_states, st.hand_base, st.calibrated = {}, {}, {}, {}
     st.light, st.light_state, st.torch, st.torch_state, st.torch_vis = nil, nil, nil, nil, nil
+    st.game_light, st.light_on, st.light_int = nil, nil, 0
     if not libs() then log("setup: Kismet libraries not found"); return end
     if cfg.hands_show ~= 0 then make_hand(pawn, 1); make_hand(pawn, 0) end
     if cfg.flash_on ~= 0 then make_flashlight(pawn) end
@@ -167,7 +191,7 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
         if pawn ~= st.pawn or not UEVR_UObjectHook.exists(st.pawn) then setup(pawn) end
         -- drop references to anything destroyed (level change, respawn) before using it
         local function gone(o) return o ~= nil and not UEVR_UObjectHook.exists(o) end
-        if gone(st.light) or gone(st.torch) or gone(st.hands[0]) or gone(st.hands[1]) then setup(pawn) end
+        if gone(st.light) or gone(st.game_light) or gone(st.torch) or gone(st.hands[0]) or gone(st.hands[1]) then setup(pawn) end
         st.t = st.t + delta
         -- calibrate each hand copy on the first tick after UEVR placed it
         for side = 0, 1 do
@@ -176,7 +200,7 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
         if cfg._dirty then cfg._dirty = false; apply_hand_offsets()
             if st.light_state then st.light_state:set_hand(cfg.flash_hand); set_offset(st.light_state, cfg.flash_x, cfg.flash_y, cfg.flash_z) end
             if st.torch_state then st.torch_state:set_hand(cfg.flash_hand) end
-            if st.torch and st.torch_state == nil then pcall(function() st.torch:K2_SetRelativeRotation(rot(0, cfg.flash_model_yaw, 0), false, nil, false) end) end
+            if st.torch and st.torch_state == nil then pcall(function() st.torch:K2_SetRelativeRotation(rot(0, cfg.flash_model_yaw, 0), false, struct("ScriptStruct /Script/Engine.HitResult"), false) end) end
             for side = 0, 1 do if st.hands[side] then pcall(function() st.hands[side]:SetVisibility(cfg.hands_show ~= 0, false) end) end end
         end
         -- flashlight model: create once the mesh is loaded, then show it only while the light is on
@@ -184,8 +208,9 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
             st.retry = st.t
             make_torch_model(pawn)
         end
-        if st.torch ~= nil and st.light ~= nil then
-            local on = cfg.flash_model ~= 0 and st.light:IsVisible()
+        pcall(sync_light)
+        if st.torch ~= nil and st.game_light ~= nil then
+            local on = cfg.flash_model ~= 0 and st.game_light:IsVisible()
             if on ~= st.torch_vis then st.torch_vis = on; st.torch:SetVisibility(on, false); log("flashlight model " .. (on and "shown" or "hidden")) end
         end
     end)
