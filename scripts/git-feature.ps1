@@ -61,6 +61,7 @@ function Assert-FeatureBranch {
     }
 }
 function Push-Branches([string[]]$names) {
+    $env:GCM_INTERACTIVE = 'never'   # fail instead of popping the credential manager's account picker at the user
     foreach ($n in $names) {
         $ok = $false
         foreach ($wait in 0, 2, 4, 8, 16) {
