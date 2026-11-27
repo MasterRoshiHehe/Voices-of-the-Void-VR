@@ -1,1 +1,6 @@
 menu_unconstrain_aspect=1
+# graphics probe (votv_graphics.lua): probe only while gfx_override_enable=0
+# add lines like: gfx_set r.MotionBlurQuality=0
+gfx_log_interval_s=10
+gfx_reapply_interval_s=2
+gfx_override_enable=0

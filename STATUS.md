@@ -72,6 +72,18 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 ## Log
 
+### 2026-11-27 Claude (graphics thread): graphics probe script written, not yet run
+
+- New `profile\VotV-Win64-Shipping\scripts\votv_graphics.lua` (branch `feature/vr-graphics-comfort`). **Read-only by default.** It does three things:
+  - Logs 24 AA/post/upscale cvars (`[votv-gfx]` lines) at startup, on every change and every `gfx_log_interval_s`.
+  - Logs a frame-time summary every `gfx_log_interval_s`: mean, p50, p95, p99, max, and the count over 72/90 Hz budgets, per map. It's taken from the engine tick delta, so it isn't a GPU or compositor timing.
+  - Applies opt-in `gfx_set <cvar>=<n>` overrides only while `gfx_override_enable=1`, re-applied every `gfx_reapply_interval_s` only if the value drifted, and logged each time, so we can see whether the game's settings code fights back.
+- Default `gfx_` keys appended to the repo's `scripts\votv_settings.txt` (menu key untouched). Checks: lupa (Lua 5.5) syntax OK; mock test of the UEVR API (parse, percentiles, apply, drift re-apply, missing cvar) passed. Not run in the game: the install was locked by the menu run.
+- Findings while waiting (read-only):
+  - The game's own graphics settings live in `Saved\settings.sav` (UE compressed, class `save_settings_C`). Settings seen across the saves: sg_* groups, ssrQuality, sharpness, volumFog, shadow toggles, sunUpdateRate, consoleLights, accurateRain, cheapWindowShader, crosshairOpacity. No motion blur, DOF, FOV, grain or fringe setting appears; they may exist at their defaults, which aren't saved.
+  - RHI is D3D11. UE4SS is not installed.
+  - UEVR 1.05 supports `cvars_standard.txt`, `cvars_data.txt` and `user_script.txt` in the profile.
+
 ### 2026-11-27 Claude (repo thread): git + GitHub set up
 
 - Folder is now a git repo, remote `origin` = https://github.com/MasterRoshiHehe/Voices-of-the-Void-VR (public). `main` = LICENSE (MIT, already on GitHub) + README; `dev` = everything else via `feature/repo-setup`. The shared folder is checked out on `dev` and must stay there.
