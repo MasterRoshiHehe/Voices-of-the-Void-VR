@@ -18,7 +18,7 @@
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
 local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0,
-              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180 }
+              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 5000 }
 local active = false
 
 local function parse_cfg(text)
@@ -116,6 +116,12 @@ local function make_hand(pawn, side)
     local comp = add_comp(pawn, "Class /Script/Engine.PoseableMeshComponent")
     if comp == nil then log("hands: AddComponentByClass(PoseableMeshComponent) failed"); return end
     comp:SetSkeletalMesh(mesh, true)
+    -- Run 17:19 (user): the hands showed as white objects. Use the game arms' own (possibly dynamic) materials.
+    pcall(function()
+        local n = pawn.arms:GetNumMaterials()
+        for i = 0, n - 1 do comp:SetMaterial(i, pawn.arms:GetMaterial(i)) end
+        log("hands: copied " .. n .. " material(s) from the game's arms")
+    end)
     pcall(function() comp:SetCollisionEnabled(0) end)
     pcall(function() comp:SetCastShadow(false) end)
     st.hands[side] = comp
@@ -142,10 +148,11 @@ local function make_flashlight(pawn)
     pcall(function() mine:SetMobility(2) end)
     pcall(function() mine.IntensityUnits = light.IntensityUnits end)
     pcall(function() mine:SetIESTexture(light.IESTexture) end)
-    pcall(function() mine:SetUseIESBrightness(light.bUseIESBrightness) end)
-    pcall(function() mine:SetIESBrightnessScale(light.IESBrightnessScale) end)
+    -- Run 17:19: the game light reads intensity 0.2 (unitless) with an IES profile; copying that gave no
+    -- visible light. Our light uses its own brightness instead: flash_intensity (live), IES brightness off.
+    pcall(function() mine:SetUseIESBrightness(false) end)
     pcall(function() mine:SetSourceRadius(light.SourceRadius) end)
-    pcall(function() mine:SetIntensity(light.Intensity) end)
+    pcall(function() mine:SetIntensity(cfg.flash_intensity) end)
     pcall(function() mine:SetAttenuationRadius(light.AttenuationRadius) end)
     pcall(function() mine:SetOuterConeAngle(light.OuterConeAngle) end)
     pcall(function() mine:SetInnerConeAngle(light.InnerConeAngle) end)
@@ -169,9 +176,9 @@ local function sync_light()
     if g == nil or m == nil then return end
     local on = g:IsVisible()
     local gi = g.Intensity
-    if gi ~= nil and gi > 0 then st.light_int = gi; g:SetIntensity(0) end
-    if on ~= st.light_on then st.light_on = on; m:SetVisibility(on, false) end
-    if st.light_int > 0 and m.Intensity ~= st.light_int then m:SetIntensity(st.light_int); log("flashlight: our light intensity " .. tostring(st.light_int)) end
+    if gi ~= nil and gi > 0 then g:SetIntensity(0) end
+    if on ~= st.light_on then st.light_on = on; m:SetVisibility(on, false); log("flashlight light " .. (on and "on" or "off")) end
+    if m.Intensity ~= cfg.flash_intensity then m:SetIntensity(cfg.flash_intensity) end
 end
 
 local function make_torch_model(pawn)
