@@ -77,6 +77,20 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 ## Log
 
+### 2026-11-27 Claude (controls thread): hand ray through a native hook (not run yet)
+
+- Goal (user via coordinator 03:16): selection follows the right controller in pitch and yaw, HUD and view stay on the head, no freeze, no FUNC_Native hack.
+- `votv_hand_aim.lua` now pre-hooks the **native** `GameplayStatics.GetPlayerCameraManager` (UEVR `hook_ptr`, no flag changes). `mainPlayer_C:arm()` calls it first and then reads that actor's location, rotation and forward (pak call order), so the pre-hook moves the camera manager actor to the right-hand component just before every Blueprint use. The view and HUD come from the camera cache, so they stay on the head. `ctl_aim_method=1` (Head), `hand_aim=1`, `hand_gpcm_hook=1`, no per-frame moves (`hand_tick_apply=0`). The Blueprint `arm()` hook and the native-flag change are removed.
+- Checked: Lua syntax and a stub run (hook installed, pre-hook returns true and moves the camera manager to the hand, periodic log line). **Not run in game.** Expected log: `hooked GameplayStatics.GetPlayerCameraManager`, then `GetPlayerCameraManager calls N` with N > 0 every 2 s in gameplay, and the pre-tick `look target ...: off hand ray` angle small. If calls stay 0 or the game misbehaves: set `hand_gpcm_hook=0` (live) for plain head aim.
+
+### 2026-11-27 Claude (menu thread): -LateInject: menus flat via Virtual Desktop's own laser, F10 switches to VR
+
+- New plan (user/coordinator): skip VR for the menus; the game starts flat so Virtual Desktop shows it in its desktop view, where VD's built-in laser moves the real mouse. `run-vr.ps1 -LateInject`: launch flat (-d3d11), then wait (bounded, `-LateInjectTimeoutMinutes`, default 60) for **F10** (GetAsyncKeyState, any window focused), 3 s, then the usual UEVR injection and checks. A map-load trigger isn't possible: the shipping build writes no `VotV.log` (`%LOCALAPPDATA%\VotV\Saved\Logs` holds only an empty cef3.log).
+- `Play-VOTV-VR.bat` and `Play-VOTV-VR-SteamVR.bat` (repo root and game folder) now pass `-LateInject` and say "Menus: use Virtual Desktop's desktop laser. Once your save has loaded, press F10 to switch to VR." The SteamVR one keeps `-Runtime OpenVR`.
+- votv_pointer.dll is not installed with -LateInject (even with -Pointer; logged) and is removed from the profile's plugins folder at every launch (none there now). Source kept. The UEVR 2D-main-menu Lua stays (inactive: the menu is passed before injection).
+- Checked: parse OK, `Play-VOTV-VR.bat -DryRun -Pointer` (pointer ignored, OpenXR, stops before launch), GetAsyncKeyState call works. The F10 wait itself is untested (needs a run).
+- Freeze report (03:03): no VotV process running any more; UEVR log ends 03:02:23 with "Sending rehook request for D3D / Unhooking D3D11 / Hooking D3D11 / Hooked DirectX 11" (a D3D re-hook during the load); no game log exists to show more.
+
 ### 2026-11-27 Claude (controls thread): freeze on loading the save (run 02:58) with the arm() native-flag hook; reverted
 
 - Run `logs/2026-11-27_02-58-06`: `votv_hand_aim.lua` set FUNC_Native on `mainPlayer_C:arm` (flags 0x1C420000 -> 0x1C420400) and hooked it with `hook_ptr` at 02:58:58. **The game froze while loading into the save** (user 03:02); I killed it at 03:02:28. Most likely cause: forcing the native flag on a Blueprint function. Not proven, no dump read. Don't retry this route.

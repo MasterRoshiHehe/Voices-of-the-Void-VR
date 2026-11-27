@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hand] " .. tostring(s)) end) end
 
-local cfg = { hand_aim = 1, hand_arms = 0, hand_log_s = 2, hand_pre_apply = 0, hand_tick_apply = 0, hand_max_cm = 150, hand_arm_hook = 1 }
+local cfg = { hand_aim = 1, hand_arms = 0, hand_log_s = 2, hand_pre_apply = 0, hand_tick_apply = 0, hand_max_cm = 150, hand_gpcm_hook = 1 }
 local active = false
 
 local function parse_cfg(text)
@@ -62,7 +62,7 @@ local function attach(comp, hand)
     return true
 end
 
-local hook_arm   -- defined below (needs dist and the camera manager helpers)
+local hook_gpcm   -- defined below (needs dist and the camera manager helpers)
 
 local function setup(pawn)
     state.pawn, state.hand, state.arms_done = pawn, nil, false
@@ -80,7 +80,7 @@ local function setup(pawn)
     if comp == nil then log("setup: AddComponentByClass returned nil"); return end
     if not attach(comp, 1) then log("setup: motion controller state failed"); return end
     state.hand = comp
-    hook_arm()
+    hook_gpcm()
     log("hand component attached to the right controller on " .. pawn:get_full_name())
 end
 
@@ -93,42 +93,40 @@ end
 
 local function dist(a, b) local dx, dy, dz = a.X - b.X, a.Y - b.Y, a.Z - b.Z; return math.sqrt(dx * dx + dy * dy + dz * dz) end
 
--- arm() pre-hook (user 02:39: highlight still followed the head even though the camera manager actor sat on the
--- hand between frames). Something moves the camera manager back to the head inside the frame before the pawn
--- traces, so the move is also done right before every mainPlayer_C:arm() call, the one function that builds the
--- look/use/grab ray. The hook records how far the camera manager was from the hand when arm() was entered.
-local arm_stats = { calls = 0, moved = 0, max_off = 0 }
+-- Hand ray via the game's own first call: mainPlayer_C:arm() starts with GameplayStatics.GetPlayerCameraManager,
+-- then reads that actor's location/rotation/forward (pak call order, docs/GAME-INTERNALS.md section 3).
+-- GetPlayerCameraManager is a *native* UFunction, so UEVR's hook_ptr intercepts Blueprint calls to it without
+-- touching function flags (forcing FUNC_Native on the Blueprint arm() froze the game on load, run 02:58).
+-- Pre-hook: move the camera manager actor to the right hand, so the arm() call that follows uses the hand.
+-- The view/HUD come from the camera cache, rewritten by the camera update after the pawn ticks, so they stay on
+-- the head (UEVR aim method Head). Other Blueprint users of the camera manager (gravity gun trace, hotbar
+-- drop placement) follow the hand too, which is wanted. Counts are logged with the periodic line.
+local hook_stats = { calls = 0, moved = 0, max_off = 0 }
 local function move_pcm_to_hand()
-    if state.hand == nil or state.untracked then return end
+    if state.hand == nil or state.untracked or state.pawn == nil then return end
     local pc = api:get_player_controller(0)
     local pcm = pc and pc.PlayerCameraManager
     if pcm == nil then return end
     local loc = state.hand:K2_GetComponentLocation()
     local off = dist(pcm:K2_GetActorLocation(), loc)
-    arm_stats.calls = arm_stats.calls + 1
-    if off > 0.5 then arm_stats.moved = arm_stats.moved + 1 end
-    if off > arm_stats.max_off then arm_stats.max_off = off end
-    pcm:K2_SetActorLocationAndRotation(loc, state.hand:K2_GetComponentRotation(), false, hit, false)
+    hook_stats.calls = hook_stats.calls + 1
+    if off > 0.5 then hook_stats.moved = hook_stats.moved + 1 end
+    if off > hook_stats.max_off then hook_stats.max_off = off end
+    if off > 0.5 then pcm:K2_SetActorLocationAndRotation(loc, state.hand:K2_GetComponentRotation(), false, hit, false) end
 end
-local arm_hooked = false
-hook_arm = function()
-    if arm_hooked then return end
-    arm_hooked = true
+local gpcm_hooked = false
+hook_gpcm = function()
+    if gpcm_hooked then return end
+    gpcm_hooked = true
     local ok, err = pcall(function()
-        local cls = find("BlueprintGeneratedClass /Game/main/mainPlayer.mainPlayer_C")
-        local f = cls and cls:find_function("arm")
-        if f == nil then error("mainPlayer_C:arm not found") end
-        -- Run 02:45: hook installed but 0 calls. Blueprint-to-Blueprint calls skip a function's native pointer
-        -- unless FUNC_Native (0x400) is set, so set it (the pattern other UEVR profiles use) before hooking.
-        local flags = f:get_function_flags()
-        f:set_function_flags(flags | 0x400)
-        log(string.format("arm() function flags 0x%X -> 0x%X", flags, f:get_function_flags()))
+        local f = find("Function /Script/Engine.GameplayStatics.GetPlayerCameraManager")
+        if f == nil then error("GameplayStatics.GetPlayerCameraManager not found") end
         f:hook_ptr(function(fn, obj, locals, result)
-            if active and cfg.hand_aim ~= 0 and cfg.hand_arm_hook ~= 0 then pcall(move_pcm_to_hand) end
+            if active and cfg.hand_aim ~= 0 and cfg.hand_gpcm_hook ~= 0 then pcall(move_pcm_to_hand) end
             return true
         end, nil)
     end)
-    log(ok and "hooked mainPlayer_C:arm (pre: camera manager to the hand)" or ("arm hook failed: " .. tostring(err)))
+    log(ok and "hooked GameplayStatics.GetPlayerCameraManager (pre: camera manager to the hand)" or ("GetPlayerCameraManager hook failed: " .. tostring(err)))
 end
 
 uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
@@ -163,9 +161,9 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
             state.last_log = state.t
             local head = pawn.Camera:K2_GetComponentLocation()
             local now = pcm:K2_GetActorLocation()
-            log(string.format("hand-head %.0f cm, pcm-hand %.1f cm, hand rot p%.0f y%.0f, sets %d; arm() calls %d, camera manager away from the hand on entry %d times (max %.0f cm)",
-                dist(loc, head), dist(now, loc), r.Pitch, r.Yaw, state.sets, arm_stats.calls, arm_stats.moved, arm_stats.max_off))
-            arm_stats.calls, arm_stats.moved, arm_stats.max_off = 0, 0, 0
+            log(string.format("hand-head %.0f cm, pcm-hand %.1f cm, hand rot p%.0f y%.0f, sets %d; GetPlayerCameraManager calls %d, camera manager moved to the hand %d times (max %.0f cm away)",
+                dist(loc, head), dist(now, loc), r.Pitch, r.Yaw, state.sets, hook_stats.calls, hook_stats.moved, hook_stats.max_off))
+            hook_stats.calls, hook_stats.moved, hook_stats.max_off = 0, 0, 0
         end
     end)
     if not ok then
