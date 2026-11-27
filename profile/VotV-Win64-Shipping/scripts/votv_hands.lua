@@ -194,7 +194,11 @@ local function part(pawn, parent, mat, x, y, z, sx, sy, sz, yaw)
 end
 
 local function make_built_hand(pawn, side)
-    cube = cube or find("StaticMesh /Engine/BasicShapes/Cube.Cube")
+    -- Run 17:42: /Engine/BasicShapes/Cube isn't loaded in the shipping game; try other always-present cubes.
+    for _, path in ipairs({ "StaticMesh /Engine/BasicShapes/Cube.Cube", "StaticMesh /Engine/EngineMeshes/Cube.Cube",
+                            "StaticMesh /Engine/EditorMeshes/EditorCube.EditorCube", "StaticMesh /Engine/EngineMeshes/Sphere.Sphere" }) do
+        if cube == nil then cube = find(path); if cube ~= nil then log("hands: built hands use " .. path) end end
+    end
     if cube == nil then log("hands: engine cube mesh not loaded"); return end
     local mat = nil
     pcall(function() mat = pawn.arms:GetMaterial(0) end)
