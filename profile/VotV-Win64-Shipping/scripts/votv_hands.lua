@@ -144,6 +144,19 @@ local function pose_hand(side)
         local p = comp:GetParentBone(fname(n)):to_string()
         if keepset[p] then keepset[n] = true end
     end
+    -- Run 17:56 (user): "tiiny dots that are following my hands": the hand draws but far too small. Rigs exported
+    -- with an armature scale carry a bone scale in the reference pose, so forcing scale 1 shrinks the skin.
+    -- Read each kept hand bone's own component-space scale once (before any change) and put that back, times
+    -- hands_scale (live).
+    st.ref_scale = st.ref_scale or {}
+    st.ref_scale[side] = st.ref_scale[side] or {}
+    for _, sd in ipairs(seeds) do
+        if st.ref_scale[side][sd] == nil then
+            local ok, v = pcall(function() return comp:GetBoneScaleByName(fname(sd), COMP) end)
+            st.ref_scale[side][sd] = (ok and v) and { X = v.X, Y = v.Y, Z = v.Z } or { X = 1, Y = 1, Z = 1 }
+            log(string.format("hands: %s reference scale (%.3f %.3f %.3f)", sd, st.ref_scale[side][sd].X, st.ref_scale[side][sd].Y, st.ref_scale[side][sd].Z))
+        end
+    end
     local tiny, zero = vec(0.01, 0.01, 0.01), vec(0, 0, 0)
     for i = 0, nb - 1 do
         local n = names[i]
@@ -157,7 +170,8 @@ local function pose_hand(side)
             local mx = side == 1 and 1 or -1
             comp:SetBoneLocationByName(f, vec(cfg.hands_x, mx * cfg.hands_y, cfg.hands_z), COMP)
             comp:SetBoneRotationByName(f, rot(cfg.hands_pitch, mx * cfg.hands_yaw, mx * cfg.hands_roll), COMP)
-            comp:SetBoneScaleByName(f, vec(1, 1, 1), COMP)
+            local r, k = st.ref_scale[side][sd], cfg.hands_scale
+            comp:SetBoneScaleByName(f, vec(r.X * k, r.Y * k, r.Z * k), COMP)
         end)
         if not ok then log("hands: posing " .. sd .. " failed: " .. tostring(err)) end
     end
