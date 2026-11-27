@@ -15,7 +15,7 @@ session (or the other agent) picks up the work.
 - Publisher guidance and chosen scope: [dated sources in RESEARCH.md; user decision and unknowns]
 - Launch for testing: `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
-- Who owns the game install right now: game-internals thread, claimed 2026-11-27 01:31, deadline 04:31 (aiming to finish by ~02:15): one flat run with UE4SS (no UEVR) for the object/header dumps; UE4SS is removed from the game folder afterwards. (Menu thread released it 01:29; menu thread will not launch or touch game/profile/injector until the controls thread's run is done.)
+- Who owns the game install right now: nobody (game-internals thread released it 2026-11-27 01:36; UE4SS removed, game folder back to the exe only). Controls thread is next in line (menu thread waits for its run).
 
 ## Rendering compatibility
 
@@ -69,8 +69,28 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 | Date | Signature (module+offset or error ID) | Run | Build and settings | Doing what | Linked issue |
 |---|---|---|---|---|---|
+| 2026-11-27 01:23:29 | VotV-Win64-Shipping.exe, module unknown, 0xc0000409 at 0x7ff82415c28f (Windows Application log, event 1000) | start time matches the 01:22 run (`logs\2026-11-27_01-22-21`, menu thread) | 5e690d8f, UEVR 1.05 OpenXR | unknown (found later by the game-internals thread; may be at exit) | owner of that run to check |
+| 2026-11-27 01:28:34 | same signature, 0xc0000409 at 0x7ff82415c28f | start time matches the 01:27 run (`logs\2026-11-27_01-27-26`, menu thread) | 5e690d8f, UEVR 1.05 OpenXR | unknown (may be at exit) | owner of that run to check |
 
 ## Log
+
+### 2026-11-27 Claude (game-internals thread): game internals mapped (pak + live UE4SS dump); docs/GAME-INTERNALS.md
+
+- **Result:** `docs/GAME-INTERNALS.md` (classes, components, functions, variables, hook points). Key finding: **all look/use/pick-up/carry rays come from one Blueprint function, `mainPlayer_C:arm(float customLength, out Start, out End, out Rotation)`**: start = PlayerCameraManager location, end = start + PCM forward x (customLength or `armLength` = 200 cm). `LookAtFunction` (each tick) sphere-traces that ray for the hover/selection target; the carried object hangs on a `PhysicsHandleComponent` (`grabHandle`) whose target is set every tick to `arm(grabLen).End` (`grabLen` default 100, wheel 50..150). Recommended hand-aim route: post-hook `arm` and replace its out params with the right-hand pose (UE4SS `RegisterHook`; out-param writes not yet proven). Gravity gun (`comp_gravitygun_C:trace`) and throwing (`traceThrow`, from `Camera`) do not use `arm`. The selection marker is `ui_UI_C` projecting bounds through the game camera (`bpCodeLib.BoundingBox2DPoints`, `ProjectWorldLocationToWidgetPosition`), which explains the open marker issue. CONTROLS.md §1 item 4 lists the input events found in the player BP.
+- **Method:** read-only Python readers for the pak (v11, no AES key, uncompressed) and the cooked assets, plus a heuristic bytecode call scan, all in `F:\Moddings\VOTV\dumps\_scripts\` (outside the repo; FModel not needed). No game data in the repo.
+- **Game folder change (temporary, undone):** UE4SS v4.0.0 (`UE4SS_v4.0.0.zip`, SHA-256 251ad0d1381a241750e036f5918cbf2b5d7ec58ebc608cb2dd09d459d0c81e45 = release digest) installed 01:31 as `VotV\Binaries\Win64\dwmapi.dll` + `ue4ss\` (mods: only `Keybinds` and my `VotvInternalsDump` probe; cheat/console mods off). **Removed 01:36**: the Win64 folder holds only the exe again. Staged copy for reuse: `F:\Moddings\VOTV\dumps\ue4ss_stage\` (how-to in GAME-INTERNALS.md).
+- **Runs (flat, `-NoInject`, no UEVR):** `logs\2026-11-27_01-30-13`: the game closed after 32 s before the probe fired; no crash event, no crash folder; cause unknown. Second run: my Lua had a UTF-8 BOM (from `Set-Content -Encoding utf8`), UE4SS refused it; I closed the game. Third run 01:31: the probe loaded the key BP classes in the main menu, logged `armLength=200.0 grabLen=100.0`, and wrote the object dump (68 MB), CXX headers (2,571 files) and UHT headers; clean exit. Outputs in `F:\Moddings\VOTV\dumps\ue4ss_2026-11-27_0131\` (not in git). check-run verdict INCONCLUSIVE on each (runtime check UNSURE by design for flat runs).
+- Not done: a live probe with a spawned player (needs someone to load a save; the menu has no `mainPlayer_C`), so the call-order findings come from the pak, not observation. UE4SS together with UEVR in one process is untested.
+- Crash ledger: added two 0xc0000409 crashes from the Windows event log (01:23, 01:28) whose start times match the menu thread's runs; not from this thread's runs.
+- Next (controls thread): cheapest first experiment `VR_AimMethod=2`; then the `arm` post-hook. Lock released.
+
+### 2026-11-27 Claude (menu thread): menu-pieces run 01:27 analysed; hide mechanism prepared (lock released)
+
+- Game lock released 01:29 (controls thread next). Analysis from `logs\2026-11-27_01-27-26` only; game, AppData profile and injector not touched.
+- **Settings still not loaded**: `require("votv/settings")` failed because UEVR 1.05 leaves `package.path` at the game's exe folder (`no file '...\Binaries\Win64\votv/settings.lua'`). Fix: the script adds its own folder (from `debug.getinfo(1,"S").source`) to `package.path`. Stub-tested with a default `./?.lua` path and an `@...\scripts\votv_menu_camera.lua` chunk name: settings load. If `debug` is missing in game, the log line now names the script dir it found (or nil).
+- **Widget tree**: the visible `ui_menu_C` has ~7870 widgets under its WidgetTree (nested settings slots etc.), so listing the first 120 was useless: the only brush resources among them were 16x16 icons and an `inst_uiBorder` material. The probe now logs a count per widget class and every widget whose brush/background has a resource (not 16x icons), plus any BackgroundBlur/RetainerBox/Viewport/NativeWidgetHost, deduplicated (first 3 of each resource, max 80 lines).
+- **Prepared (no behaviour change by default):** `menu_hide_widgets = {}` in `scripts\votv\settings.lua`. Names listed there (direct children of the visible `ui_menu_C`, as the probe prints them) are set Hidden while in the menu and put back to their previous visibility on leaving; nested widgets with the same name are not touched; scanning stops after 10 tries. Stub-tested (hidden in menu, restored after, nested untouched). Once the next run's probe names the flat-picture widget, the fix is one line in settings.lua.
+- Waiting: next normal launch through the menu (after the controls thread's run) to get the probe output.
 
 ### 2026-11-27 Claude (controls thread): controller plugin built (step 1 + button layout), not yet run in game
 
