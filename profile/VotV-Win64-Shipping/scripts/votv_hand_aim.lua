@@ -123,7 +123,10 @@ hook_gpcm = function()
     if gpcm_hooked then return end
     gpcm_hooked = true
     local ok, err = pcall(function()
-        local f = find("Function /Script/Engine.GameplayStatics.GetPlayerCameraManager")
+        -- Run 16:49: find_uobject("Function ...") returned an object without hook_ptr; look the UFunction up
+        -- through its class instead (the pattern other UEVR profiles use).
+        local cls = find("Class /Script/Engine.GameplayStatics")
+        local f = cls and cls:find_function("GetPlayerCameraManager")
         if f == nil then error("GameplayStatics.GetPlayerCameraManager not found") end
         f:hook_ptr(function(fn, obj, locals, result)
             if active and cfg.hand_aim ~= 0 and cfg.hand_gpcm_hook ~= 0 then pcall(move_pcm_to_hand) end

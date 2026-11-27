@@ -17,8 +17,8 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0,
-              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1 }
+local cfg = { hands_show = 0, hands_x = 0, hands_y = 0, hands_z = 0,
+              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180 }
 local active = false
 
 local function parse_cfg(text)
@@ -138,8 +138,15 @@ local function make_torch_model(pawn)
     pcall(function() comp:SetCastShadow(false) end)
     comp:SetVisibility(false, false)
     st.torch = comp
-    st.torch_state = mc_state(comp, cfg.flash_hand)
-    log("flashlight: model attached to the " .. (cfg.flash_hand == 1 and "right" or "left") .. " controller")
+    -- Run 16:49 (user): the model pointed back at the player. It now hangs off the light itself (which UEVR
+    -- drives from the controller), turned by flash_model_yaw (live, default 180 degrees).
+    if st.light ~= nil then
+        comp:K2_AttachToComponent(st.light, fname("None"), 0, 0, 0, false)   -- keep relative location/rotation/scale
+        comp:K2_SetRelativeRotation(rot(0, cfg.flash_model_yaw, 0), false, nil, false)
+    else
+        st.torch_state = mc_state(comp, cfg.flash_hand)
+    end
+    log("flashlight: model attached to the light, turned " .. cfg.flash_model_yaw .. " deg")
     return true
 end
 
@@ -169,6 +176,7 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
         if cfg._dirty then cfg._dirty = false; apply_hand_offsets()
             if st.light_state then st.light_state:set_hand(cfg.flash_hand); set_offset(st.light_state, cfg.flash_x, cfg.flash_y, cfg.flash_z) end
             if st.torch_state then st.torch_state:set_hand(cfg.flash_hand) end
+            if st.torch and st.torch_state == nil then pcall(function() st.torch:K2_SetRelativeRotation(rot(0, cfg.flash_model_yaw, 0), false, nil, false) end) end
             for side = 0, 1 do if st.hands[side] then pcall(function() st.hands[side]:SetVisibility(cfg.hands_show ~= 0, false) end) end end
         end
         -- flashlight model: create once the mesh is loaded, then show it only while the light is on
