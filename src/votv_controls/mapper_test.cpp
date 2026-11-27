@@ -50,6 +50,12 @@ int main() {
         Rec r; r.step(pad(PAD_A)); r.step(pad(PAD_A | PAD_LSHOULDER)); r.step(pad(PAD_LSHOULDER)); r.step(pad());
         check("layer change mid-press releases original key", r.take(), "+SpaceBar layer+ -SpaceBar layer-");
     }
+    {   // right stick click = F (flashlight); left grip + right stick click = mark (votv_marks.dll): sends nothing
+        Rec r; r.step(pad(PAD_RTHUMB)); r.step(pad());
+        check("r_thumb = flashlight", r.take(), "+F -F");
+        r.step(pad(PAD_LSHOULDER)); r.step(pad(PAD_LSHOULDER | PAD_RTHUMB)); r.step(pad(PAD_LSHOULDER)); r.step(pad());
+        check("left grip + r_thumb = mark (no key)", r.take(), "layer+ layer-");
+    }
     {   // left stick diagonal -> W + D; back to centre releases both
         Rec r; PadState p; p.ly = 0.8f; p.lx = 0.8f; r.step(p); r.step(pad());
         check("stick diagonal", r.take(), "+W +D -W -D");

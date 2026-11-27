@@ -108,7 +108,7 @@ public:
 
         // Digital buttons: the action chosen at press time is the one released, even if the layer changed.
         button(PAD_RSHOULDER, p, "use", "use");
-        button(PAD_RTHUMB, p, "flashlight", "flashlight");
+        button(PAD_RTHUMB, p, "flashlight", "mark");   // layer + stick click = mark (votv_marks.dll); "mark" has no key, so nothing is sent
         button(PAD_X, p, "crouch", "highlightnearby");
         button(PAD_Y, p, "inventory", "zoom");
         button(PAD_A, p, "jump", "lockobject");
