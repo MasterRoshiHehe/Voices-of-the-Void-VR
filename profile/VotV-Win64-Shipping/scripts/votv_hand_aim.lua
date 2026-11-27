@@ -118,6 +118,11 @@ hook_arm = function()
         local cls = find("BlueprintGeneratedClass /Game/main/mainPlayer.mainPlayer_C")
         local f = cls and cls:find_function("arm")
         if f == nil then error("mainPlayer_C:arm not found") end
+        -- Run 02:45: hook installed but 0 calls. Blueprint-to-Blueprint calls skip a function's native pointer
+        -- unless FUNC_Native (0x400) is set, so set it (the pattern other UEVR profiles use) before hooking.
+        local flags = f:get_function_flags()
+        f:set_function_flags(flags | 0x400)
+        log(string.format("arm() function flags 0x%X -> 0x%X", flags, f:get_function_flags()))
         f:hook_ptr(function(fn, obj, locals, result)
             if active and cfg.hand_aim ~= 0 and cfg.hand_arm_hook ~= 0 then pcall(move_pcm_to_hand) end
             return true
