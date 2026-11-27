@@ -85,6 +85,26 @@ What changes for VOTV because of it:
 - **Order of work (handoff §16, adapted):** UEVR stereo + logs → flat-to-VR check with marks → hand-aimed interaction → UI layer → comfort/perf polish → release hygiene (pin game build by exe hash, fail closed).
 - The handoff's `reference/` companion folder was not included; ask if specific files (e.g. `vd-freeze-handoff.md`, `MARK-HANDOFF.md`) are needed.
 
+## 9. In-game tuning menu: what each UEVR version allows (checked 2026-11-27)
+
+Sources: local UEVR 1.05 headers (tools/UEVR/1.05, revision 1a810f69, plugin API 2.34); docs.uevr.io plugin and Lua
+pages; github.com/praydog/UEVR master (lua-api/lib/src/ScriptContext.cpp, lua-api/examples/imgui_and_configs.lua,
+examples/example_plugin/Plugin.cpp); github.com/praydog/UEVR-nightly releases.
+
+- UEVR 1.05 (2024-11-16, our installed build): Lua has no `imgui`, no `on_draw_ui`, no file IO (confirmed in game:
+  `votv_hands.lua:727 attempt to index a nil value (global 'imgui')`). The 1.05 C++ plugin API has no draw-UI hook either.
+  A plugin can still draw its own Dear ImGui window: UEVR's example plugin creates its own ImGui context and draws it
+  in `on_present` (desktop) and `on_post_render_vr_framework_dx11/dx12` (into the VR frame), feeding mouse/keyboard
+  from `on_message`. In the headset that window has no pointer: it needs mouse input or our own controller navigation.
+- UEVR nightly (Lua imgui/json/fs added 2025-04-28, commit 78a11df7; latest nightly-01143, 2026-08-30): Lua scripts get
+  `uevr.sdk.callbacks.on_draw_ui(fn)` with `imgui.*` widgets drawn inside UEVR's own menu (usable in the headset with
+  UEVR's menu pointer), plus `json.dump_file/load_file` and `io.open`, so a script can save presets itself.
+- Mistake recorded: the first panel was written against the nightly Lua API while the install is 1.05.
+- Options: (a) move to a UEVR nightly (in-game panel in the UEVR menu; everything built on 1.05 must be re-verified on
+  both runtimes); (b) stay on 1.05 and render our own ImGui window from votv_controls.dll (Dear ImGui is MIT; UEVR's
+  example code is all-rights-reserved, so written from scratch), with controller navigation; (c) desktop Hand-Tuner
+  window (built, scripts/hand_tuner.py). Decision: pending the user.
+
 ## Unknowns to close
 
 - Exact in-game version string; default RHI.
