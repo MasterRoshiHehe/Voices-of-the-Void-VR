@@ -32,18 +32,40 @@ Findings that decide the design:
    `get_joystick_axis`, `is_action_active`) and haptics, from Lua or a C++ plugin
    (`tools\UEVR\1.05\UEVR\include\uevr\API.h`).
 
+4. **Checked in the player Blueprint** (2026-11-27, game-internals thread, pak read; details in
+   `docs/GAME-INTERNALS.md` §8): mouse look is axis events `mouseX`/`mouseY` (bound in code) that
+   call `AddControllerYawInput`/`AddControllerPitchInput`, plus `MouseWheelAxis`. `mainPlayer_C`
+   handles these actions (pressed/released events): `drop`, `offhand`, `spawnmenu`, `alt`,
+   `throwPath`, `run`, `dismount`, `cheatmenu`, `rotate`, `crouch`, `jump`, `inventory`, `noclip`,
+   `forward`, `back`, `left`, `right`, `use`, `zoom`, `hotbar_1..9`, `superscreenshot`,
+   `flashlight`, `quicksave`, `undo`, `ragdoll`, `scrollUp`, `scrollDown`, `debugtp`, `lockObject`,
+   `backupsave`, `activateEquipment`, `fire`, `highlightNearby`, and raw keys `LeftMouseButton`,
+   `AnyKey`, `Escape`. Observable success flags on the pawn: `input_use`, `input_E`, `input_fire`,
+   `input_LMB`, `input_rotate`, `input_drop`, `input_crouch`, `input_scrollUp/Down`; held object
+   `grabbing_actor`; look target `lookAtActor`. **Aim ray:** every look/use/pick-up/carry ray comes
+   from `mainPlayer_C:arm` (camera manager location + forward); redirecting that one function to the
+   right hand is the recommended hand-aim route (GAME-INTERNALS.md §3).
+
 ### Action inventory (current bindings)
 
 | Context | Action (binding) |
 |---|---|
 | On foot | `Forward` W, `back` S, `Left` A, `Right` D, `Run` LShift, `Crouch` LCtrl, `Jump` Space, `Up` E / `Down` Q (ladder/fly, to confirm), `ragdoll` C, `noclip` V (debug) |
-| Hands/objects | `fire` LMB (grab/hold, to confirm), `use` E, `rotate` RMB (+mouse), `lockObject` MMB, `Drop` R, `offhand` T, `activateEquipment` LAlt, `containerPut` LShift, `scrollUp/Down` wheel, `throwPath` unbound |
+| Hands/objects | `use` E (pick up / grab / use; hold E = carry slabs, radial menu if enabled), `fire` LMB (throw while grabbing, use held item on keypads/keyholes, attack), `rotate` RMB (+mouse, while grabbing), `lockObject` MMB (fix in place), `Drop` R (press vs hold differ: place/hold vs to inventory, swapped by a setting; hold R + RMB + wheel = precise placement), `offhand` T, `activateEquipment` LAlt, `containerPut` LShift, `scrollUp/Down` wheel, `throwPath` unbound (shows throw arc) |
 | Items/HUD | `hotbar_1..10` 1-0, `inventory` Tab, `flashlight` F, `highlightNearby` G, `Zoom` X |
 | ATV | `atv_forward/back/left/right` WASD, `atv_brake` Space, `atv_turbo` LShift, `atv_lights` F, `atv_honk` LAlt, `atv_use` E, `atv_viewSteering` LCtrl, `atv_zoom` X, `atv_fall` C, `dismount` Esc |
 | Computers (keyboard stays) | `coord_*` WASD/Enter/LShift/LAlt/1-3, `radar_*` WASD/Q/E/Enter/LShift, `Commit` Enter, `NewRow` unbound, `Undo` Z |
 | System | `Pause` Esc, `quicksave` F5, `backupsave` F6, `LockMouse` F1, `spawnmenu` Q, `cheatmenu` Num0, `debugtp` Num., `superscreenshot`/`demosnow` unbound |
 
 "To confirm" = semantics from play knowledge, to be checked in a capability run (see §4).
+
+Semantics source (2026-11-27, links from the user): wiki.gg `Guides/Settings` (stub, edited
+2026-11-25) and `Gamemodes/Tutorial` (marked WIP / possibly outdated, edited 2026-11-22). They
+disagree on press vs hold R; T, G and containers aren't described. Timing-relevant settings: "E/R
+Hold initial delay" 0.0 s and "E/R Hold delay" 0.2 s (so button passthrough must keep real press
+length), "Release E instead of LMB for use interactions" (default on). Consequences for §2: grip = E
+is the natural grab; trigger = LMB is throw/use; B must pass R's hold length through unchanged.
+Default FOV 110 and "Panel FOV" 65 exist as settings (relevant to UEVR's FOV handling).
 
 ## 2. Proposed layout (Quest 3 Touch, right-handed)
 
@@ -53,10 +75,10 @@ so every context (on foot, ATV) behaves as on the keyboard and a rebind in the g
 | Controller | Sends (action) | Notes |
 |---|---|---|
 | Right hand pose | aim | Game aim follows the right controller (UEVR `VR_AimMethod=2`); grabs and pick-ups go where the hand points |
-| Right trigger | LMB (`fire`) | grab / hold / use; held while the trigger is held |
-| Right grip | E (`use`; ATV `atv_use`) | interact, pick up |
+| Right trigger | LMB (`fire`) | throw while grabbing, use held item on keypads/keyholes; held while held |
+| Right grip | E (`use`; ATV `atv_use`) | grab / pick up / interact; hold = carry |
 | A | Space (`Jump`; ATV brake) | |
-| B | R (`Drop`) | |
+| B | R (`Drop`) | press and hold keep their different meanings (place vs to inventory) |
 | Right stick left/right | snap turn 45° (existing UEVR setting) | one turn per push |
 | Right stick up/down | mouse wheel (`scrollUp/Down`) | whatever the wheel does in game |
 | Right stick click | F (`flashlight`; ATV lights) | |
@@ -103,6 +125,76 @@ menu shortcut).
 2. Aim-only build: `VR_AimMethod=2`, nothing else; check pick-up follows the hand and which way
    WASD walks. Both runtimes.
 3. Buttons build: the table above.
+
+## 5. 6DoF hands: research and proposed ladder (2026-11-27)
+
+User asked (2026-11-27 00:11) for research on keybinding and 6DoF controls. Sources: the game's
+own grab code (`docs/GAME-INTERNALS.md` §3-4, pak read, not yet live), UEVR docs
+([adding 6DoF](https://docs.uevr.io/usage/adding_6dof.html),
+[UObjectHook Lua](https://docs.uevr.io/plugins/lua/types/UObjectHook.html),
+[MotionControllerState](https://docs.uevr.io/plugins/lua/types/MotionControllerState.html)), and
+other UEVR games (Subnautica 2's jbusfield 6DoF profile, [Road to VR 2026-06-19](https://roadtovr.com/subnautica-2-vr-mod-vr-controller-support/); method not confirmed). No existing
+VOTV motion-controls profile was found.
+
+**What the game gives us.** Grabbing is not an attach: E picks a target with the `arm()` ray, then a
+`PhysicsHandleComponent` (`grabHandle`) pulls the object every tick to `arm(grabLen).end` with
+rotation `grabTargetRotation` (`grabLen` 50-150 cm, wheel ±10). Heavy objects use constraints toward
+the same point. Tools in hand are actors attached to the `weapon` mesh. So nearly all of "real hand
+interaction" reduces to two inputs the game already reads: **where `arm()` says the ray/hand is**,
+and **the carry rotation**. That is far cheaper than writing our own physics grab, and keeps the
+game's own mass, collisions and drop/throw logic.
+
+**UEVR tools.** UObjectHook can attach any component of the pawn to a controller (hand 0/1, offsets
+saved with "Save State"; Lua: `UObjectHook.get_or_add_motion_controller_state(obj)` then
+`set_hand`, `set_location_offset`, `set_rotation_offset`, `set_permanant`). "Permanent" stops UEVR
+resetting the transform after rendering (needed when game logic reads it); risky on anything that
+moves the player. Persistence across respawn/new objects isn't documented: test.
+
+Proposed ladder, one rung per build, each with its own check; the user picks how far to go:
+
+| Rung | What the player feels | How | Observable check |
+|---|---|---|---|
+| 1. Point with the hand | look-at, pick-up target and carried object follow where the right hand points (from the head) | `VR_AimMethod=2` only | `lookAtActor` changes when only the hand moves; held object follows the hand direction |
+| 2. Ray from the hand | same, but the ray starts at the hand (no head parallax) | override `arm()` out params with the hand pose (UE4SS post-hook) and set `VR_AimMethod=0` | `arm.start` equals the hand position in a trace log |
+| 3. Object in the hand | carried prop sits at the hand and turns with the wrist (no RMB needed) | in `arm()` for the carry call, `end` = hand + short offset; `grabTargetRotation` = hand rotation × the rotation at pick-up | prop centre within a few cm of the hand; wrist twist turns it; walls still block it (physics handle) |
+| 4. Tools in the hand | flashlight, held tools and the arms mesh follow the hand | UObjectHook attach of `weapon` (and `light_R`), hide `arms`/`arms_off` | eye snapshot shows the item at the controller |
+| 5. Physical throw | let go while swinging to throw | on release, set the dropped prop's velocity from the hand's last ~100 ms (Lua) | prop speed ≈ hand speed |
+| 6. Near grab, off hand | grab what the hand touches; left hand holds the offhand item | sphere overlap at the hand instead of a ray; left-hand `arm()`/`weapon_off` | grab without pointing works; no grab through walls |
+
+### Using the player character's own hands (user asked 2026-11-27 00:11)
+
+Read from the pak (2026-11-27; reports in `F:\Moddings\VOTV\dumps\reports_fparms.txt`, outside the repo):
+
+- First-person arms = `arms` / `arms_off` on the pawn, mesh `FP_arms` with skeleton `FP_arms_Skeleton`.
+  Bones per side: `shoulder`, `upperarm`, `forearm`, `hand`, `weapon` (item socket), plus
+  `IK_hand` and `armPole` helper bones. **No finger bones**, so the hands keep one fixed pose; no
+  finger curl from grip/trigger is possible without new art.
+- Its anim Blueprint `FP_arms_Skeleton_AnimBlueprint_C` is only a montage slot to output (no IK
+  node). The arms just play per-tool montages (crowbar, shovel, mop, fire extinguisher, digital map,
+  metal detector, rake, ritual knife, suitcase, sponge). So the game does no arm IK we could steer;
+  we'd pose the bones ourselves.
+- Third-person body: `playermodel` / `mesh_playerVisible` (owner-no-see, used for shadows/ragdoll);
+  skeleton not read yet.
+
+Options, cheapest first:
+
+| Option | Looks like | How | Cost / risk |
+|---|---|---|---|
+| H1. Rigid arms on the hand | the game's arm+hand mesh moves with the controller; forearm follows rigidly | UObjectHook attach `arms` to the right controller (and `arms_off` left), offset so `hand` sits at the grip | Cheap (profile only). Forearm can poke out at odd wrist angles; tool montages still play on top |
+| H2. Hand-only look | only the hand/glove is shown at the controller | H1 plus hide/shrink `upperarm`/`shoulder` (bone scale via a poseable copy) or a near clip | Medium; avoids the floating forearm |
+| H3. Two-bone IK arms | shoulder fixed near the camera, hand at the controller, elbow bends naturally | spawn a `PoseableMeshComponent` with `FP_arms`, copy the montage pose each tick, then set `upperarm`/`forearm`/`hand` from our own two-bone IK in Lua (`armPole` bone gives the elbow direction) | Most immersive; per-tick Lua cost, needs UE4SS/UEVR side by side; montages for tool swings would need blending |
+| H4. Full body | the third-person body follows head and hands | IK on `playermodel`, hide its head | Large; not recommended now |
+
+Recommendation: H1 at rung 4 (tools in the hand already uses the same attachment), then H3 if the
+user wants elbows. Unknowns to check live: whether the arms are visible at all while carrying
+plain props (the montages suggest arms show only with tools), and the arms' FOV/scale under UEVR.
+
+Not planned unless asked: finger tracking (hide the arms instead), physical levers and
+buttons (the game's buttons are E-use; pointing + grip already works), haptics (off by default).
+
+Button mapping stays as §2 at every rung; only `rotate` (RMB) and the mouse wheel become optional
+once rung 3 works. Rungs 2-6 need UE4SS next to UEVR in the same process (not yet run together) and
+a live check that a UE4SS post-hook can rewrite `arm()`'s out params; fallback is a C++ UEVR plugin.
 
 ## Prompts
 
