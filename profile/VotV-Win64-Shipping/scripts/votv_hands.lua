@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_curl_deg = 70, hands_curl_axis = 1, hands_curl_sign = 1, hands_thumb_axis = 1, hands_thumb_sign = 1, hands_f_thumb = 1, hands_f_index = 2, hands_f_middle = 3, hands_f_ring = 4, hands_r_yaw = -90, hands_r_roll = 90, hands_l_yaw = -90, hands_l_roll = -90, hands_style = 1, hands_scale = 1,
+local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_curl_deg = 80, hands_curl_axis = 2, hands_curl_sign = 1, hands_thumb_axis = 2, hands_relax_deg = 10, hands_seg1 = 0.8, hands_seg2 = 1.0, hands_seg3 = 0.67, hands_thumb_sign = 1, hands_f_thumb = 1, hands_f_index = 2, hands_f_middle = 3, hands_f_ring = 4, hands_r_yaw = -90, hands_r_roll = 90, hands_l_yaw = -90, hands_l_roll = -90, hands_style = 1, hands_scale = 1,
               flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 500, hands_force_mat = 0, flash_copy_game = 1, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
@@ -484,7 +484,7 @@ local function setup(pawn)
             log("hands: kerfurOmega_KelSkin in memory: " .. tostring(mm ~= nil))
         end
         if mm == nil and cfg.hands_style >= 2 then mm = load_mannequin() end
-        if mm ~= nil then make_mannequin_hand(pawn, 1, mm); make_mannequin_hand(pawn, 0, mm)
+        if mm ~= nil then make_mannequin_hand(pawn, 1, mm); make_mannequin_hand(pawn, 0, mm); st.finger_rest = nil; st.curl_force = true
         elseif cfg.hands_style >= 1 then make_built_hand(pawn, 1); make_built_hand(pawn, 0); apply_hand_offsets()
         else make_hand(pawn, 1); make_hand(pawn, 0) end
     end
@@ -548,9 +548,13 @@ local function apply_fingers(side)
             end
             local rest = st.finger_rest[key]
             local pt = comp:GetBoneTransformByName(parent, COMP)
-            local deg = cfg.hands_curl_deg * amount[i]
+            -- Marks 18:41: with the pitch axis the fingers fanned sideways in the palm plane, so that axis is the
+            -- palm normal; the curl axis is yaw (hands_curl_axis=2). Joint ratios: knuckle 0.8, middle 1.0,
+            -- fingertip 0.67 of the middle joint; a relaxed open hand keeps hands_relax_deg of curl.
+            local ratio = { cfg.hands_seg1, cfg.hands_seg2, cfg.hands_seg3 }
+            local deg = cfg.hands_relax_deg + (cfg.hands_curl_deg - cfg.hands_relax_deg) * amount[i]
             for k = 1, 3 do
-                local curlT = kml:MakeTransform(vec(0, 0, 0), curl_rot(deg, i == 1), vec(1, 1, 1))
+                local curlT = kml:MakeTransform(vec(0, 0, 0), curl_rot(deg * ratio[k], i == 1), vec(1, 1, 1))
                 local newc = kml:ComposeTransforms(kml:ComposeTransforms(curlT, rest[k]), pt)
                 comp:SetBoneTransformByName(fname(chain[k]), newc, COMP)
                 pt = newc
