@@ -18,7 +18,7 @@
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
 local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_style = 1, hands_scale = 1,
-              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 800, flash_copy_game = 1, flash_lens_slot = -1, flash_model_x = -20 }
+              flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 1500, flash_copy_game = 0, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
 local function parse_cfg(text)
@@ -96,19 +96,31 @@ local function source_mesh(pawn)
     end
 end
 
+-- Run 17:46: on kerfurOmega_KelSkin the plain hand_R/hand_L were found but nothing showed: that rig has control
+-- bones (hand_R) and deform bones (hand_FK_R ...). Pick the hand bone whose subtree holds the finger bones.
 local function find_hand_bone(comp, side)
-    local best = nil
     local nb = comp:GetNumBones()
+    local names, parent = {}, {}
+    for i = 0, nb - 1 do names[i] = comp:GetBoneName(i):to_string() end
+    for i = 0, nb - 1 do parent[names[i]] = comp:GetParentBone(fname(names[i])):to_string() end
+    local function under(b, anc) local p = parent[b]; local n = 0
+        while p ~= nil and p ~= "None" and n < 64 do if p == anc then return true end; p = parent[p]; n = n + 1 end
+        return false end
+    local cands = {}
     for i = 0, nb - 1 do
-        local b = comp:GetBoneName(i):to_string()
-        local l = b:lower()
-        local is_hand = l:find("hand") ~= nil and not l:find("ik") and not l:find("twist") and not l:find("pole")
+        local b = names[i]; local l = b:lower()
+        local is_hand = l:find("hand") ~= nil and not l:find("ik") and not l:find("twist") and not l:find("pole") and not l:find("end") and not l:find("layer")
         local right = l:find("_r$") or l:find("%.r$") or l:find("right") or l:find("^r_")
         local left = l:find("_l$") or l:find("%.l$") or l:find("left") or l:find("^l_")
-        if is_hand and ((side == 1 and right) or (side == 0 and left)) then
-            if best == nil or #b < #best then best = b end   -- shortest match: hand_r over hand_r_end
-        end
+        if is_hand and ((side == 1 and right) or (side == 0 and left)) then cands[#cands + 1] = b end
     end
+    local best, best_f = nil, -1
+    for _, c in ipairs(cands) do
+        local f = 0
+        for i = 0, nb - 1 do local l = names[i]:lower(); if (l:find("finger") or l:find("thumb") or l:find("index")) and under(names[i], c) then f = f + 1 end end
+        if f > best_f or (f == best_f and best and #c < #best) then best, best_f = c, f end
+    end
+    if best ~= nil then log(string.format("hands: hand bone candidates %s -> %s (%d finger bones under it)", table.concat(cands, ","), best, best_f)) end
     return best, nb
 end
 
