@@ -17,7 +17,7 @@
 
 local function log(s) pcall(function() uevr.params.functions.log_info("[votv-hands] " .. tostring(s)) end) end
 
-local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_curl_deg = 80, hands_mcp = 85, hands_pip = 100, hands_dip_ratio = 0.67, hands_relax = 0.15, hands_splay = 0, hands_thumb_opp = 0, hands_curl_axis = 0, hands_curl_sign = 1, hands_thumb_axis = 0, hands_relax_deg = 10, hands_seg1 = 0.8, hands_seg2 = 1.0, hands_seg3 = 0.67, hands_thumb_sign = 1, hands_f_thumb = 1, hands_f_index = 2, hands_f_middle = 3, hands_f_ring = 4, hands_r_yaw = -90, hands_r_roll = 90, hands_l_yaw = -90, hands_l_roll = -90, hands_style = 1, hands_scale = 1,
+local cfg = { hands_show = 1, hands_x = 0, hands_y = 0, hands_z = 0, hands_pitch = 0, hands_yaw = 0, hands_roll = 0, hands_source = 0, hands_bounds = 20, hands_auto_yaw = 90, hands_curl_deg = 80, hands_mcp = 55, hands_pip = 70, hands_dip_ratio = 0.6, hands_relax = 0.1, hands_splay = 0, hands_thumb_opp = 0, hands_curl_axis = 0, hands_curl_sign = 1, hands_thumb_axis = 0, hands_relax_deg = 10, hands_seg1 = 0.8, hands_seg2 = 1.0, hands_seg3 = 0.67, hands_thumb_sign = 1, hands_f_thumb = 1, hands_f_index = 2, hands_f_middle = 3, hands_f_ring = 4, hands_r_yaw = -90, hands_r_roll = 90, hands_l_yaw = -90, hands_l_roll = -90, hands_style = 1, hands_scale = 1,
               flash_on = 1, flash_hand = 0, flash_x = 8, flash_y = 0, flash_z = 0, flash_model = 1, flash_model_yaw = 180, flash_intensity = 500, hands_force_mat = 0, flash_copy_game = 1, flash_lens_slot = -1, flash_model_x = -20 }
 local active = false
 
@@ -469,6 +469,9 @@ local function make_torch_model(pawn)
 end
 
 local function setup(pawn)
+    log(string.format("setup: finger bend mcp %s pip %s dip_ratio %s relax %s axis %s; flash_intensity %s",
+        tostring(cfg.hands_mcp), tostring(cfg.hands_pip), tostring(cfg.hands_dip_ratio), tostring(cfg.hands_relax),
+        tostring(cfg.hands_curl_axis), tostring(cfg.flash_intensity)))
     st.pawn = pawn
     st.hands, st.hand_states, st.hand_base, st.calibrated, st.hand_bone = {}, {}, {}, {}, {}
     st.light, st.light_state, st.torch, st.torch_state, st.torch_vis = nil, nil, nil, nil, nil

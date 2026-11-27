@@ -10,6 +10,7 @@
 //   votv_controls_trace.txt     every sent key/wheel/recentre/release with ms timestamps
 //   votv_driver.txt             test driver mailbox (scripted controller states; see run_driver_file)
 #include <windows.h>
+#include <psapi.h>
 
 #include <algorithm>
 #include <chrono>
@@ -71,7 +72,7 @@ public:
     void on_initialize() override {
         dir_ = API::get()->get_persistent_dir();
         trace_.open(dir_ / "votv_controls_trace.txt", std::ios::app);
-        log("start: plugin votv_controls v1, profile dir %s", dir_.string().c_str());
+        log("start: plugin votv_controls v1, build %s %s, profile dir %s", __DATE__, __TIME__, dir_.string().c_str());
         load_bindings();
         load_settings(true);
 
@@ -348,6 +349,16 @@ private:
                 auto* ox = API::get()->param()->openxr;
                 if (!xr_.tried && ox->get_xr_session() != nullptr) {
                     if (!xrh::g_log.empty()) event("fingers: " + xrh::g_log);
+                    {   // which openxr_loader modules are loaded (a second copy would bypass the hook)
+                        std::string mods;
+                        HMODULE hm[1024]; DWORD need = 0;
+                        if (K32EnumProcessModules(GetCurrentProcess(), hm, sizeof(hm), &need))
+                            for (DWORD i = 0; i < need / sizeof(HMODULE); ++i) {
+                                char path[MAX_PATH]{}; GetModuleFileNameA(hm[i], path, MAX_PATH);
+                                if (std::strstr(path, "openxr_loader") || std::strstr(path, "OPENXR_LOADER")) mods += std::string(path) + " ";
+                            }
+                        event("fingers: loaded openxr_loader modules: " + mods);
+                    }
                     xr_.init((XrInstance)ox->get_xr_instance(), (XrSession)ox->get_xr_session());
                     event("fingers: " + xr_.status);
                 }

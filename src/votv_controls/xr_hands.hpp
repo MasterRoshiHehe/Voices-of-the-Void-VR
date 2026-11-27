@@ -148,6 +148,13 @@ inline void install() {
         g_loader = LoadLibraryW(p.c_str());
     }
     if (!g_loader) { g_log += "openxr_loader.dll not found; "; return; }
+    {
+        wchar_t lp[MAX_PATH]{}; GetModuleFileNameW(g_loader, lp, MAX_PATH);
+        char buf[MAX_PATH * 2]{}; WideCharToMultiByte(CP_UTF8, 0, lp, -1, buf, sizeof(buf), nullptr, nullptr);
+        SYSTEMTIME tm; GetLocalTime(&tm);
+        char ts[32]; snprintf(ts, sizeof(ts), "%02d:%02d:%02d.%03d", tm.wHour, tm.wMinute, tm.wSecond, tm.wMilliseconds);
+        g_log += std::string("hook installed at ") + ts + " on " + buf + "; ";
+    }
     void* target = (void*)GetProcAddress(g_loader, "xrCreateInstance");
     if (!target) { g_log += "xrCreateInstance not exported; "; return; }
     // Run 18:58: patching import/export entries missed UEVR's call (it already held the function pointer), so the

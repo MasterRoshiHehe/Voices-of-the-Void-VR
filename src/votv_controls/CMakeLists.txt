@@ -15,6 +15,6 @@ set(OPENVR_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/openvr-sdk/v2.15.6/h
 set(OPENXR_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/openxr-sdk/include" CACHE PATH "OpenXR headers")
 target_include_directories(votv_controls PRIVATE ${UEVR_INCLUDE} ${OPENVR_INCLUDE} ${OPENXR_INCLUDE})
 target_compile_definitions(votv_controls PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
-target_link_libraries(votv_controls PRIVATE user32 minhook)
+target_link_libraries(votv_controls PRIVATE user32 psapi minhook)
 
 add_executable(mapper_test mapper_test.cpp)
