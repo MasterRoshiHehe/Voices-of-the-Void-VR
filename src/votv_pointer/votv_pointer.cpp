@@ -64,14 +64,31 @@ std::map<std::string, std::string> parse_kv(const fs::path& p) {
     return kv;
 }
 
-void send_mouse(DWORD flags, LONG dx = 0, LONG dy = 0, DWORD data = 0) {
+UINT send_mouse(DWORD flags, LONG dx = 0, LONG dy = 0, DWORD data = 0) {
     INPUT in{};
     in.type = INPUT_MOUSE;
     in.mi.dx = dx;
     in.mi.dy = dy;
     in.mi.mouseData = data;
     in.mi.dwFlags = flags;
-    SendInput(1, &in, sizeof(INPUT));
+    return SendInput(1, &in, sizeof(INPUT));  // events inserted (1) or 0 (blocked, e.g. UIPI)
+}
+
+// One line of evidence per click (live session 2026-11-27: clicks counted in the trace weren't proven to reach
+// the menu): SendInput result, last error, foreground window owner and title, OS cursor position.
+std::string click_context(UINT sent) {
+    DWORD err = sent ? 0 : GetLastError();
+    HWND fg = GetForegroundWindow();
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    char title[128]{};
+    GetWindowTextA(fg, title, sizeof(title));
+    POINT cur{};
+    GetCursorPos(&cur);
+    char buf[400];
+    snprintf(buf, sizeof(buf), "SendInput=%u err=%lu fg='%s' %s cursor %ld,%ld", sent, err, title,
+             pid == GetCurrentProcessId() ? "(game)" : "(NOT the game)", cur.x, cur.y);
+    return buf;
 }
 
 struct Settings {
@@ -143,6 +160,7 @@ public:
         if (hit && hit->on_screen && cw > 0 && ch > 0) {
             dot_u_ = hit->u; dot_v_ = hit->v; dot_visible_ = true;
             POINT pt{(LONG)std::lround(hit->u * (cw - 1)), (LONG)std::lround(hit->v * (ch - 1))};
+            last_client_ = pt;
             ClientToScreen(hwnd, &pt);
             if (std::abs(pt.x - last_pt_.x) + std::abs(pt.y - last_pt_.y) >= 1) {
                 SetCursorPos(pt.x, pt.y);
@@ -170,11 +188,12 @@ public:
         int edge = trigger_.update(trig);
         if (edge == 1 && dot_visible_) {
             send_mouse(MOUSEEVENTF_MOVE, 1, 0); send_mouse(MOUSEEVENTF_MOVE, -1, 0);
-            send_mouse(MOUSEEVENTF_LEFTDOWN); button_down_ = true;
-            log("click down at u %.3f v %.3f", dot_u_.load(), dot_v_.load());
+            UINT sent = send_mouse(MOUSEEVENTF_LEFTDOWN); button_down_ = true;
+            log("click down at u %.3f v %.3f (target client %ld,%ld): %s", dot_u_.load(), dot_v_.load(),
+                last_client_.x, last_client_.y, click_context(sent).c_str());
         } else if (edge == -1 && button_down_) {
-            send_mouse(MOUSEEVENTF_LEFTUP); button_down_ = false;
-            log("click up");
+            UINT sent = send_mouse(MOUSEEVENTF_LEFTUP); button_down_ = false;
+            log("click up: %s", click_context(sent).c_str());
         }
 
         // Stick up/down = wheel, repeating while held.
@@ -331,6 +350,7 @@ private:
     votv::Hysteresis trigger_;
     bool button_down_ = false;
     POINT last_pt_{-100000, -100000};
+    POINT last_client_{0, 0};
     std::atomic<bool> dot_visible_{false};
     std::atomic<float> dot_u_{0.5f}, dot_v_{0.5f};
     bool warned_renderer_ = false;

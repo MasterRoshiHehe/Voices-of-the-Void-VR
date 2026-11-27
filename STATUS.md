@@ -77,6 +77,11 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 ## Log
 
+### 2026-11-27 Claude (menu thread): pointer clicks unproven in VR; per-click evidence added
+
+- Live correction: the user got into the save with the physical mouse, not the pointer. The 6 `click down/up` lines at 02:37:23-25 only prove the plugin issued them while it was active (active requires the game window in the foreground at that tick; it went inactive at 02:37:28 for focus). v1 didn't record SendInput's return value, so whether they were inserted, and where the OS cursor was (the physical mouse moves it too), is unknown. **Pointer clicks in VR: unproven.**
+- Rebuilt `votv_pointer.dll` (pointer_test 12/12): each `click down`/`click up` line now carries SendInput's result and last error, the foreground window's title and whether it's the game, the OS cursor position, and the client pixel the pointer aimed at. Next session: a click that lands shows `SendInput=1 ... (game) cursor x,y` matching the target, and the menu reacts.
+
 ### 2026-11-27 Claude (menu thread): pointer live result (controls session 02:36) and fixes for the next session
 
 - Pointer plugin loaded and went active in the main menu (`active (2D screen, right hand)`, HMD forward (-0.05 0.45 -0.89) at activation, so -Z forward / +Y up as assumed). Hits tracked the hand (`hit u 0.484 v 0.557 -> client 1239,802 of 2560x1440 (ray 1.75 m)`), trigger pulls went out as clicks (6 between 02:37:23 and :25). The OS cursor followed the hand (user saw the dot under the cursor on the PC monitor).
