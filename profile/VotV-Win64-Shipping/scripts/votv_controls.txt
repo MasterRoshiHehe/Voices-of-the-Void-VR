@@ -1,6 +1,6 @@
 ctl_enabled=1
 ctl_left_handed=0
-ctl_aim_method=1
+ctl_aim_method=2
 hand_aim=1
 hand_arms=0
 hand_log_s=2
