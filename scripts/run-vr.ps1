@@ -36,8 +36,10 @@ param(
     [int]$EyeCaptureFirstDelaySeconds = 30,    # after injection, before the first snap
     [int]$EyeCaptureMax = 30,                  # bound on snaps per run
     [switch]$LeaveSteamVR,                     # SteamVR runs: keep SteamVR open afterwards (default: close it if this run started it)
+    [switch]$KeepVdOculusLayer,                # OpenXR runs: keep Virtual Desktop's OculusXR compatibility API layer (default: disabled for the game; quit-crash A/B)
     [switch]$ResetProfile,
     [switch]$NoInject,                         # flat run with the same launch path, for A/B
+    [switch]$Controls,                         # install the motion-controller plugin (votv_controls.dll) for this run (opt-in while under test)
     [switch]$DryRun                            # run every pre-launch check and fix, then stop without launching
 )
 
@@ -184,9 +186,26 @@ try {
     if (Test-Path $repoScripts) {
         $dstScripts = Join-Path $profileDir 'scripts'
         New-Item -ItemType Directory -Force $dstScripts | Out-Null
-        $synced = Get-ChildItem $repoScripts -File | ForEach-Object { Copy-Item $_.FullName (Join-Path $dstScripts $_.Name) -Force; $_.Name }
+        # Recursive (subfolders such as scripts\votv\ hold require() modules; UEVR only auto-runs top-level .lua).
+        $synced = Get-ChildItem $repoScripts -File -Recurse | ForEach-Object {
+            $rel = $_.FullName.Substring($repoScripts.Length).TrimStart('\')
+            $dst = Join-Path $dstScripts $rel
+            New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
+            Copy-Item $_.FullName $dst -Force
+            $rel
+        }
         Write-RunLog "UEVR scripts synced: $($synced -join ', ')"
     }
+    # Motion-controller plugin (controls thread): build/votv_controls/votv_controls.dll -> profile plugins folder,
+    # this run only (removed again in the finally block). Opt-in with -Controls while it is under test, so other threads' runs stay unchanged.
+    $ctlDll = Join-Path $repo 'build\votv_controls\votv_controls.dll'
+    $ctlDst = Join-Path $profileDir 'plugins\votv_controls.dll'
+    if (Test-Path $ctlDst) { Remove-Item $ctlDst -Force -ErrorAction SilentlyContinue }
+    if ($Controls -and (Test-Path $ctlDll)) {
+        New-Item -ItemType Directory -Force (Split-Path $ctlDst) | Out-Null
+        Copy-Item $ctlDll $ctlDst -Force
+        Write-RunLog "controls plugin installed: votv_controls.dll sha256 $((Get-FileHash $ctlDll -Algorithm SHA256).Hash.Substring(0,12))"
+    } else { Write-RunLog "controls plugin: not installed ($(if (-not $Controls) { 'no -Controls' } else { 'not built' }))" }
     # Runtime: the repo baseline is the source of truth (the injector rewrites the AppData copy).
     # -Runtime OpenVR is a per-run override (SteamVR parallel test); the default stays OpenXR and
     # is restored in the finally block.
@@ -222,6 +241,15 @@ try {
     @{ stamp = $stamp; runDir = $runDir; runtime = $Runtime; feature = $Feature; started = (Get-Date).ToString('s') } |
         ConvertTo-Json | Set-Content -Path $activeMarker -Encoding utf8
     $ownsMarker = $true
+
+    # Virtual Desktop installs an implicit OpenXR API layer ("Compatibility layer for OculusXR Plugin",
+    # openxr-oculus-compatibility.dll, which loads VirtualDesktop.LibOVRRT64_1.dll). UEVR doesn't need it,
+    # and its code sits right under the fail-fast on every OpenXR quit-crash dump (2026-11-27). The
+    # manifest's own disable_environment switch turns it off for this game process only (no system change).
+    if ($wantXr -and -not $NoInject -and -not $KeepVdOculusLayer) {
+        $env:DISABLE_XR_APILAYER_VIRTUALDESKTOP_OCULUS_COMPATIBILITY = '1'
+        Write-RunLog 'VD OculusXR compatibility layer disabled for this run (-KeepVdOculusLayer to keep it)'
+    }
 
     # Launch the game.
     Start-Process -FilePath $exe -ArgumentList $GameArgs -WorkingDirectory (Split-Path $exe) | Out-Null
@@ -303,6 +331,12 @@ try {
             $svState = if ($now -and -not $steamBefore) { 'started' } elseif ($now) { 'was-already-running' } else { 'not-running' }
             Write-RunLog "SteamVR during run: $svState"
             if ($svState -eq 'started') { Write-RunLog 'WARNING: SteamVR started during an OpenXR run' }
+            # Which XR modules are in the game process (proves whether the VD layer switch took effect).
+            try {
+                $game.Refresh()
+                $xrMods = @($game.Modules | Where-Object { $_.ModuleName -match 'openxr|LibOVRRT|oculus' } | ForEach-Object ModuleName)
+                Write-RunLog "XR modules in game: $(if ($xrMods) { $xrMods -join ', ' } else { 'none' })"
+            } catch { Write-RunLog "XR modules in game: unknown ($($_.Exception.Message))" }
         }
     }
 
@@ -331,8 +365,18 @@ finally {
     }
     Get-Process -Name 'UEVRInjector' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
+    # Controls plugin: the run's trace goes with the logs; the DLL leaves the profile with the run.
+    $ctlTrace = Join-Path $profileDir 'votv_controls_trace.txt'
+    if (Test-Path $ctlTrace) { Move-Item $ctlTrace (Join-Path $runDir 'votv_controls_trace.txt') -Force -ErrorAction SilentlyContinue }
+    $ctlDst2 = Join-Path $profileDir 'plugins\votv_controls.dll'
+    if (Test-Path $ctlDst2) { Remove-Item $ctlDst2 -Force -ErrorAction SilentlyContinue }
     foreach ($f in @('log.txt', 'config.txt', 'cameras.txt', 'imgui.ini')) {
         $src = Join-Path $profileDir $f
+        # log.txt only if UEVR wrote it during this run (else it is an older run's log: false PASS risk).
+        if ($f -eq 'log.txt' -and (Test-Path $src) -and (Get-Item $src).LastWriteTime -lt (Get-Item $runLog).CreationTime) {
+            Write-RunLog 'UEVR log.txt not copied: not written during this run'
+            continue
+        }
         if (Test-Path $src) { Copy-Item $src (Join-Path $runDir ("uevr_" + $f)) -Force }
     }
     $gameLogs = Join-Path $env:LOCALAPPDATA 'VotV\Saved\Logs'
