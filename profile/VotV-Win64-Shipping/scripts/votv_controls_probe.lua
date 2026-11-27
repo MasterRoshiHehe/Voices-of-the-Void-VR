@@ -53,6 +53,24 @@ local function sample(pawn)
     return s
 end
 
+-- Turning: control-rotation yaw rate, bucketed so only changes of state are logged
+-- (still / turning <90 deg/s / spinning >=90 deg/s), with the measured rate.
+local last_yaw, turn_state = nil, "still"
+local function turning(pawn, dt)
+    local ok, yaw = pcall(function() return pawn:GetControlRotation().Yaw end)
+    if not ok or yaw == nil then return end
+    if last_yaw ~= nil and dt > 0 then
+        local d = (yaw - last_yaw + 540) % 360 - 180
+        local rate = math.abs(d) / dt
+        local st = rate < 5 and "still" or (rate < 90 and "turning" or "spinning")
+        if st ~= turn_state then
+            turn_state = st
+            log(string.format("turn=%s rate=%.0f deg/s yaw=%.0f", st, rate, yaw))
+        end
+    end
+    last_yaw = yaw
+end
+
 -- Stays idle (no reads, no log lines) until the controls plugin sends its first event, so runs without the
 -- plugin (other threads' tests) are unchanged.
 local active = false
@@ -75,6 +93,7 @@ uevr.sdk.callbacks.on_pre_engine_tick(function(engine, delta)
         local pn = name_of(pawn)
         if pn ~= pawn_name then pawn_name = pn; last = {}; log("pawn " .. pn) end
         if not pn:find("mainPlayer") then return end
+        turning(pawn, 0.05)
         local s = sample(pawn)
         local changes = {}
         for k, v in pairs(s) do

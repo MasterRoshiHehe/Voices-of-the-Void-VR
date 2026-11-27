@@ -73,6 +73,7 @@ public:
         mapper_.sink.mouse_move = [this](float dx, float dy) { send_mouse_move(dx, dy); };
         mapper_.sink.recenter = [this]() { API::VR::recenter_view(); event("recenter"); };
         mapper_.sink.layer_changed = [this](bool on) {
+            layer_on_ = on;
             if (snap_turn_) API::VR::set_mod_value("VR_SnapTurn", !on);
             event(on ? "layer on" : "layer off");
         };
@@ -97,9 +98,12 @@ public:
         const double t = now_ms();
         if (t - settings_check_t_ > 1000) { settings_check_t_ = t; load_settings(false); poll_driver_file(); }
 
+        if (t - uevr_check_t_ > 1000) { uevr_check_t_ = t; enforce_uevr_values(); }
+
         votv::PadState p;
         double pad_t;
         { std::scoped_lock lk(pad_mtx_); p = pad_; pad_t = pad_t_; }
+        trace_right_stick(p);
         const bool driving = driver_active(t, p);
         if (driving) pad_t = t;
 
@@ -121,7 +125,9 @@ private:
     std::ofstream trace_;
     std::mutex pad_mtx_;
     votv::PadState pad_{};
-    double pad_t_{0}, settings_check_t_{0};
+    double pad_t_{0}, settings_check_t_{0}, uevr_check_t_{0};
+    bool layer_on_{false};
+    int rstick_x_state_{0};
     votv::Mapper mapper_;
     bool seen_pad_{false}, zero_pad_{true}, snap_turn_{true};
     int aim_method_{-1};
@@ -198,15 +204,45 @@ private:
         snap_turn_ = num("ctl_snap_turn", 1) != 0;
         int aim = (int)num("ctl_aim_method", 2);   // UEVR enum: 0 game, 1 head, 2 right controller, 3 left
         if (s.left_handed && aim == 2) aim = 3;
-        if (aim != aim_method_ && aim >= 0 && aim <= 5) {
-            API::VR::set_aim_method((API::VR::AimMethod)aim);
-            aim_method_ = aim;
-        }
-        API::VR::set_mod_value("VR_SnapTurn", snap_turn_);
+        if (aim >= 0 && aim <= 5) aim_method_ = aim;
+        // Applied (and re-applied) by enforce_uevr_values: UEVR loads the profile config *after* plugins
+        // initialise, which overwrote these on the 01:40 run (aim stayed 0, snap turn off).
+        uevr_check_t_ = 0;
         if (was_enabled && !s.enabled) mapper_.release_all("disabled");
         log("settings %s (%s): enabled=%d left_handed=%d aim=%d snap=%d zero_pad=%d trig=%.2f/%.2f move=%.2f",
             first ? "loaded" : "reloaded", text.empty() ? "file missing, defaults" : "file", s.enabled, s.left_handed,
             aim_method_, snap_turn_, zero_pad_, s.trigger_press, s.trigger_release, s.move_threshold);
+    }
+
+    // UEVR mod values this plugin owns. Checked every second; re-set and logged when they differ (profile
+    // config load, UEVR menu). The settings file is the source of truth.
+    void enforce_uevr_values() {
+        const std::string want_aim = std::to_string(aim_method_);
+        const bool want_snap = snap_turn_ && !layer_on_;
+        const std::string aim_now = API::VR::get_mod_value<std::string>("VR_AimMethod");
+        const bool snap_now = API::VR::get_mod_value<bool>("VR_SnapTurn");
+        if (aim_now != want_aim || (int)API::VR::get_aim_method() != aim_method_) {
+            API::get()->param()->vr->set_mod_value("VR_AimMethod", want_aim.c_str());
+            API::VR::set_aim_method((API::VR::AimMethod)aim_method_);
+            event("uevr: VR_AimMethod was " + aim_now + ", set " + want_aim + " (now " +
+                  API::VR::get_mod_value<std::string>("VR_AimMethod") + ")");
+        }
+        if (snap_now != want_snap) {
+            API::VR::set_mod_value("VR_SnapTurn", want_snap);
+            event(std::string("uevr: VR_SnapTurn was ") + (snap_now ? "true" : "false") + ", set " +
+                  (want_snap ? "true" : "false") + " (now " +
+                  (API::VR::get_mod_value<bool>("VR_SnapTurn") ? "true" : "false") + ")");
+        }
+    }
+
+    // Right stick X in the trace (pushed left/right/centre), to line turning reports up with the stick.
+    void trace_right_stick(const votv::PadState& p) {
+        int st = p.rx > 0.5f ? 1 : (p.rx < -0.5f ? -1 : 0);
+        if (std::fabs(p.rx) < 0.3f) st = 0; else if (st == 0) return;   // hysteresis
+        if (st != rstick_x_state_) {
+            rstick_x_state_ = st;
+            event(st == 0 ? "r_stick x centre" : (st > 0 ? "r_stick x right" : "r_stick x left"));
+        }
     }
 
     // ---- output ----
