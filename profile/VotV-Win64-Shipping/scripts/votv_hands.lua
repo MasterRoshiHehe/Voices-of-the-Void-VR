@@ -509,7 +509,7 @@ pcall(function()
         if name ~= "votv_fingers" then return end
         local v = {}
         for n in tostring(data):gmatch("%-?[%d%.]+") do v[#v + 1] = tonumber(n) end
-        if #v >= 10 then
+        if #v >= 10 and not st.manual then
             for f = 1, 5 do curls[0][f] = v[f]; curls[1][f] = v[5 + f] end
             curl_dirty = true
         end
@@ -678,5 +678,67 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
     end)
     if not ok then st.fails = st.fails + 1; if st.fails <= 5 then log("tick error " .. tostring(err)) end end
 end)
+
+
+-- Hand debug panel (user 2026-11-27 19:17: "an ingame debug menu where I could set the hand poses myself", as in
+-- the Sims 4 VR mod). Drawn in UEVR's own menu (open it in VR with both stick clicks, or Insert on the keyboard;
+-- the panel is under the Lua scripts section). Every slider applies at once. "Manual pose" freezes the fingers on
+-- the sliders below instead of buttons/tracking. UEVR 1.05 Lua can't write files, so "Log values" writes all
+-- current values to the UEVR log as one line; tell Claude, and they go into scripts/votv_controls.txt.
+local ui_ok = pcall(function()
+    uevr.sdk.callbacks.on_draw_ui(function()
+        local function fslider(label, key, lo, hi, place)
+            local changed, v = imgui.slider_float(label, cfg[key], lo, hi)
+            if changed then cfg[key] = v; if place then cfg._dirty = true else st.curl_force = true end end
+        end
+        local function islider(label, key, lo, hi, place)
+            local changed, v = imgui.slider_int(label, cfg[key], lo, hi)
+            if changed then cfg[key] = v; if place then cfg._dirty = true else st.curl_force = true end end
+        end
+        imgui.text("VOTV hands")
+        local c, v = imgui.checkbox("Manual pose (sliders below drive the fingers)", st.manual == true)
+        if c then st.manual = v; st.curl_force = true end
+        if st.manual then
+            local names = { "thumb", "index", "middle", "ring", "pinky" }
+            for side = 1, 0, -1 do
+                imgui.text(side == 1 and "Right hand" or "Left hand")
+                for f = 1, 5 do
+                    local ch, nv = imgui.slider_float((side == 1 and "R " or "L ") .. names[f], curls[side][f], 0, 1)
+                    if ch then curls[side][f] = nv; st.curl_force = true end
+                end
+            end
+        end
+        imgui.text("Bend (degrees at full curl)")
+        fslider("knuckle (MCP)", "hands_mcp", 0, 130)
+        fslider("middle joint (PIP)", "hands_pip", 0, 130)
+        fslider("tip / middle ratio (DIP)", "hands_dip_ratio", 0, 1.5)
+        fslider("relaxed open hand", "hands_relax", 0, 0.6)
+        islider("bend direction (+1 / -1)", "hands_curl_sign", -1, 1)
+        islider("thumb bend direction", "hands_thumb_sign", -1, 1)
+        islider("bend axis (0 computed, 1 pitch, 2 yaw, 3 roll)", "hands_curl_axis", 0, 3)
+        islider("thumb axis (0 computed, 1-3)", "hands_thumb_axis", 0, 3)
+        imgui.text("Hand placement")
+        fslider("forward (cm)", "hands_x", -25, 25, true)
+        fslider("sideways (cm)", "hands_y", -25, 25, true)
+        fslider("up (cm)", "hands_z", -25, 25, true)
+        fslider("pitch", "hands_pitch", -180, 180, true)
+        fslider("yaw", "hands_yaw", -180, 180, true)
+        fslider("roll", "hands_roll", -180, 180, true)
+        fslider("right hand turn", "hands_r_yaw", -180, 180, true)
+        fslider("right hand roll", "hands_r_roll", -180, 180, true)
+        fslider("left hand turn", "hands_l_yaw", -180, 180, true)
+        fslider("left hand roll", "hands_l_roll", -180, 180, true)
+        fslider("hand size", "hands_scale", 0.5, 2, true)
+        if imgui.button("Log values") then
+            local keys = {}
+            for k, val in pairs(cfg) do if type(val) == "number" and k:sub(1, 6) == "hands_" then keys[#keys + 1] = k .. "=" .. string.format("%.3f", val) end end
+            table.sort(keys)
+            local pose = ""
+            if st.manual then for side = 0, 1 do for f = 1, 5 do pose = pose .. string.format(" %s%d=%.2f", side == 1 and "R" or "L", f, curls[side][f]) end end end
+            log("PANEL VALUES: " .. table.concat(keys, " ") .. (pose ~= "" and (" | manual pose" .. pose) or ""))
+        end
+    end)
+end)
+log("debug panel " .. (ui_ok and "registered in the UEVR menu" or "not available (no on_draw_ui)"))
 
 log("loaded (idle until the controls plugin is seen)")
