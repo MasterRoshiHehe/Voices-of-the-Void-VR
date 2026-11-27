@@ -15,7 +15,7 @@ session (or the other agent) picks up the work.
 - Publisher guidance and chosen scope: [dated sources in RESEARCH.md; user decision and unknowns]
 - Launch for testing (2026-11-27 03:25: one launcher, loads -Controls -Pointer): `Play-VOTV-VR.bat` (repo root; copy in `F:/Games/Voices of the Void/`) = `powershell -ExecutionPolicy Bypass -File scripts\run-vr.ps1` (stage A; logs to `logs\<timestamp>\`)
 - UEVR: 1.05 stable, `tools\UEVR\1.05\UEVR\` (not in git); profile baseline `profile\VotV-Win64-Shipping\config.txt`, seeded to `%APPDATA%\UnrealVRMod\VotV-Win64-Shipping\config.txt`
-- Who owns the game install right now: nobody (controls run 02:58 froze on loading the save and was killed 03:02; next start only on the user's go)
+- Who owns the game install right now: **controls thread** (from 2026-11-27 03:31, solo check of the full build while the user is away; releases by 04:30)
 
 ## Rendering compatibility
 
@@ -97,6 +97,12 @@ One entry per broad workaround; link longer evidence rather than copying logs he
   3. preLoad warning screen: **kept off.** On 02:40/02:45 a click at Proceed's desktop position with the 2D screen on quit the game; offline I can't prove the quad-to-client mapping keeps every click off Quit (needs button geometry logged with this build plus a hover check). Next run: hover only (`ptr_click=0`) on preLoad via `menu_map_pattern`, compare the logged cursor with the logged button rects, then enable.
   4. Offline tests: pointer_test extended (pinned screen vs head-yaw model, ray to uv to pixel, uv clamping, SendInput absolute coordinates, smoothing, deadzone, real-mouse pause): ALL PASS. Not done: a unit test of the controls plugin's 2D gating (an inline UEVR API call, no pure function), and a Lua syntax check (no Lua interpreter on this PC; installing one is a download the user hasn't approved).
 - Untested: everything in game (no run, as instructed). Unknown: whether UEVR 1.05's 2D quad is really world-fixed with these settings (if it still follows head yaw, set `ptr_screen_follow_yaw=1` in scriptsotv_pointer.txt); whether the screen model's 2 m / 2 m defaults match the quad (Calibrate-Pointer.bat). No Lua interpreter on this PC, so the Lua edit is not syntax-checked offline.
+
+### 2026-11-27 Claude (menu-laser thread): beam mesh experiment (off) and preLoad paper test; preLoad 2D stays off
+
+- **Beam (`votv_menu_beam.lua`, new, `menu_beam=0` default in `scripts\votv\settings.lua`, live):** a 0.6 cm x 200 cm `/Engine/BasicShapes/Cylinder` StaticMeshComponent added to the player controller and attached to the right controller (UEVR motion-controller state, same route as `votv_hands.lua`), only in the main menu / preLoad worlds, removed elsewhere; length/diameter live (`menu_beam_len_cm`, `menu_beam_thick_cm`). **Off by default because it should look wrong:** in UEVR's 2D screen mode the world render is shown flat on the quad, so a world mesh is drawn by the menu camera into that picture, not as a beam from the real hand; UEVR 1.05 Lua can't draw in its VR overlay. And with the default `-LateInject` launch UEVR isn't loaded in the menus at all (VD's own laser is). Checked: lupa stub run (spawn on menu, rescale live, removed in gameplay, re-spawned in preLoad, removed at `menu_beam=0`). Not run in game; one headset look with `menu_beam=1` would confirm, then drop it.
+- **preLoad paper test (pointer_test, 36/36 PASS):** with the `ui_disclaimer_C` geometry from run `logs\2026-11-27_02-52-38` (flat: `button_quit` 880,1022 267x85; `button_play`/Proceed 1413,1022 267x85, viewport 2560x1440), a controller ray at Proceed's centre on the default screen model maps to a pixel inside Proceed and not Quit (and Quit to Quit). **That passes but proves little:** it assumes UEVR's 2D screen shows the viewport 1:1, and the 02:45 run contradicts it (a click at Proceed's flat position, 1549,1066, quit the game in 2D mode). So preLoad 2D + pointer stays **off**; geometry in 2D mode needs the probe re-run with preLoad 2D on and no clicking.
+- Not done: `-DryRun` (the controls thread's run owns the install since 03:31 and DryRun syncs the profile scripts). `votv_pointer.dll` rebuilt (tests only changed).
 
 ### 2026-11-27 Claude (controls thread): hand ray through a native hook (not run yet)
 

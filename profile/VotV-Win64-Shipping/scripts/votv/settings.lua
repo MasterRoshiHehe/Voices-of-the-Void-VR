@@ -8,6 +8,10 @@ return {
     menu_eye_sign = 1,             -- -1 swaps the eyes while locked
     -- menu_map_pattern = "/game/menu%.menu",  -- one Lua pattern; unset = main menu + preLoad (warning screen)
     menu_unconstrain_aspect = 0,   -- 1 = turn off camera aspect constraints (didn't help; off)
+    menu_beam = 0,                 -- 1 = experimental beam mesh on the right controller in flat menus
+                                   -- (votv_menu_beam.lua; expected to show inside the flat picture only)
+    menu_beam_len_cm = 200,        -- beam length (cm)
+    menu_beam_thick_cm = 0.6,      -- beam diameter (cm)
     menu_hide_widgets = {},        -- staged for the menu test: { "BackgroundBlur_76", "BackgroundBlur" }
                                    -- (the flat copy of the scene); {} = hide nothing
 }
