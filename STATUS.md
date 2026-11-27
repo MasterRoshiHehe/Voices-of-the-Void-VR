@@ -77,6 +77,14 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 ## Log
 
+### 2026-11-27 Claude (controls thread): hands and hand-held flashlight landed (dev 1d19ee2), not run in game
+
+- `scripts/votv_hands.lua` (new): two copies of the pawn's `arms` mesh (FP_arms), one per controller (UEVR UObjectHook, permanent), the opposite arm hidden by bone (`shoulder_L`/`shoulder_R`), collision and shadow off. About 0.5 s after attaching, it measures the `hand_R`/`hand_L` bone in the mesh's own space and offsets the copy so the bone sits on the controller (`hands_x/y/z` add live cm). The player's flashlight `light_R` follows the **left** controller (`flash_hand=0`, offset `flash_x/y/z`), and a copy of the game's flashlight mesh (`StaticMesh /Game/meshes/flashlight/flashlight`, created once it's loaded, retried every 3 s) is held there, **visible only while the light is on**. Switches: `hands_show`, `flash_on`, `flash_model` (live; turning hands off hides them).
+- Hand aim (dev since b036311): UEVR aim Head plus a pre-hook on native `GameplayStatics.GetPlayerCameraManager` (see the entry below). The gravity gun trace also goes through `GetPlayerCameraManager`, so it follows the hand too.
+- Checked: Lua syntax; stub runs of both scripts. **Nothing here has been run in the game.** Merge: only `votv_hands.lua` and `votv_controls.txt` changed against dev (`git diff --stat`); after the merge dev still has `src/votv_pointer` and `docs/`, and `votv_menu_camera.lua` has 697 lines.
+- Lesson from f18cab1 (my merge dropped other threads' files): never build a merge tree from my branch's tree with a temporary index. Branch fresh from dev and let `git-feature.ps1` merge.
+- Next test (user starts `Test-Controls.bat`): HUD steady, highlight follows the right hand in pitch and yaw (keypad), no freeze on load; hands visible at the controllers; flashlight (right stick click) lights from the left hand and its model shows only while on. Log: `[votv-hand] ... GetPlayerCameraManager calls N` (N > 0) and `[votv-hands] hands: ... hand bone at ...`. If anything misbehaves: `hand_gpcm_hook=0`, `hands_show=0`, `flash_on=0` in `scripts/votv_controls.txt` apply live.
+
 ### 2026-11-27 Claude (menu-laser thread): dev repaired; pinned flat menu; pointer drives the real mouse; one launcher
 
 - **Dev repair.** Merge f18cab1 (03:18, controls) dropped other threads' files: src/votv_pointer, scripts/build-pointer.ps1, the 633-line votv_menu_camera.lua (reverted to 126 lines), docs/*.md, Calibrate-Pointer.bat, Capture-Menu-SteamVR.bat, eye_disparity.py, snap-window.ps1, scripts/votv/settings.lua, AGENTS.md lines, and reverted git-feature.ps1/check-run.ps1 (on disk too). Restored from be05b62 in ffd4be7 (feature/menu-laser); controls' files kept as merged (src/votv_controls = 14fc0d9, hand aim/controls.txt = 06b33b8, CONTROLS.md smooth-turn row, Test-Controls.bat).
