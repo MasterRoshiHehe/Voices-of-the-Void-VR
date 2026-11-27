@@ -220,9 +220,14 @@ state file, so the player only says what they saw and the agent finds the moment
   Test mailbox: a file `votv_mark_request.txt` in the UEVR profile folder requests a mark; its text is the note.
 - **Run summary:** `check-run.ps1` lists the run's marks above the VERDICT line and writes
   `<run>\marks.txt` and `<run>\mark_log_context.txt` (UEVR log 7 s before to 3 s after each mark).
-- **Install:** `scripts\build-marks.ps1`, then `run-vr.ps1 -Marks` (opt-in until its first in-game check).
-  Settings: `profile\VotV-Win64-Shipping\scripts\votv_marks.txt` (live). No in-headset confirmation yet
-  (UEVR 1.05 has no overlay API for plugins outside its menu); haptics off.
+- **Feedback:** one short pulse (60 ms) on the stick-click hand when the mark is saved, two pulses when it
+  failed (folder not created, two captures still writing, or the screenshot failed/came back black).
+  **Haptics exception (user 2026-11-27):** vibration is allowed for mark confirmation only; every game
+  action stays haptics-off. Switch: `mark_haptic=0`. No visual confirmation (UEVR 1.05 has no overlay API
+  for plugins outside its own menu; no game HUD message route found yet).
+- **Install:** built with `scripts\build-marks.ps1`; `run-vr.ps1` installs it on every VR run by default
+  (so also `Test-Controls.bat` and `Play-VOTV-VR.bat`), `-NoMarks` to leave it out; removed after the run.
+  Settings: `profile\VotV-Win64-Shipping\scripts\votv_marks.txt` (live).
 
 ## Prompts
 

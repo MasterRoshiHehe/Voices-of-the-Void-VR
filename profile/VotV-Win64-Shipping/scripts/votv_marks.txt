@@ -10,3 +10,9 @@ mark_jpeg_quality=90
 # Empty = <UEVR profile>\marks. run-vr.ps1 fills these in the deployed copy (dev folder marks\, mirror tool).
 mark_dir=
 mark_mirror_exe=
+# Feedback: one short controller pulse on the stick-click hand when a mark is saved, two when it failed.
+# User exception 2026-11-27: vibration allowed for mark confirmation only (everything else stays haptics-off).
+mark_haptic=1
+mark_haptic_amp=0.6
+mark_haptic_ms=60
+mark_haptic_freq=1

@@ -14,7 +14,8 @@
 //
 // Files in UEVR's profile folder (persistent dir):
 //   scripts\votv_marks.txt      live settings (key=value): mark_enabled, mark_dir, mark_key_vk, mark_chord,
-//                               mark_min_interval_ms, mark_trace_cm, mark_jpeg_quality, mark_mirror_exe
+//                               mark_min_interval_ms, mark_trace_cm, mark_jpeg_quality, mark_mirror_exe,
+//                               mark_haptic(_amp/_ms/_freq): confirmation pulse (1 = saved, 2 = failed)
 //   scripts\votv_controls.txt   read for ctl_left_handed only (mirrors the chord)
 //   votv_mark_request.txt       test mailbox: its existence requests a mark, its text is the note
 #include <windows.h>
@@ -260,6 +261,7 @@ public:
         const double t = now_ms();
         if (t - settings_check_t_ > 1000) { settings_check_t_ = t; load_settings(false); poll_request_file(); }
         if (!enabled_) return;
+        if (pending_fail_.exchange(false)) pulse(true);   // a capture failed on the worker thread
 
         std::string trigger;
         // Controller chord (UEVR's own actions, so it works whatever the controls plugin does with XInput).
@@ -284,6 +286,19 @@ public:
     }
 
 private:
+    // Mark feedback (user 2026-11-27: vibration is fine for mark confirmation only): one short pulse on the hand
+    // that clicked the stick when the mark is written; two pulses when it failed (folder, busy, or capture).
+    // Called on the game thread only. Uses the C API directly (API.hpp's wrapper has its arguments in a different order).
+    void pulse(bool failed) {
+        if (!haptic_) return;
+        auto src = left_handed_ ? API::VR::get_left_joystick_source() : API::VR::get_right_joystick_source();
+        auto vr = API::get()->param()->vr;
+        vr->trigger_haptic_vibration(0.0f, haptic_s_, haptic_freq_, haptic_amp_, src);
+        if (failed) vr->trigger_haptic_vibration(haptic_s_ + 0.12f, haptic_s_, haptic_freq_, haptic_amp_, src);
+        API::get()->log_info("[votv-mark] feedback: %s pulse (%.0f ms, amplitude %.2f, %s hand)", failed ? "double (failed)" : "single (ok)",
+                             haptic_s_ * 1000.f, haptic_amp_, left_handed_ ? "left" : "right");
+    }
+
     fs::path dir_;
     ULONG_PTR gdiplus_token_{0};
     double settings_check_t_{0};
@@ -298,6 +313,9 @@ private:
     votv_marks::Trigger chord_trigger_, key_trigger_;
     std::string pending_request_, pending_note_;
     std::atomic<int> in_flight_{0};
+    std::atomic<bool> pending_fail_{false};
+    bool haptic_{true};
+    float haptic_amp_{0.6f}, haptic_s_{0.06f}, haptic_freq_{1.0f};
     int count_{0};
 
     fs::path mark_dir() const { return mark_dir_setting_.empty() ? dir_ / "marks" : fs::path(wide(mark_dir_setting_)); }
@@ -325,6 +343,10 @@ private:
         chord_trigger_.min_interval_ms = key_trigger_.min_interval_ms = iv;
         trace_cm_ = (float)setting_num(s, "mark_trace_cm", 2000);
         jpeg_quality_ = (int)setting_num(s, "mark_jpeg_quality", 90);
+        haptic_ = setting_num(s, "mark_haptic", 1) != 0;   // mark confirmation only (user exception 2026-11-27); game input stays haptics-off
+        haptic_amp_ = (float)setting_num(s, "mark_haptic_amp", 0.6);
+        haptic_s_ = (float)setting_num(s, "mark_haptic_ms", 60) / 1000.f;
+        haptic_freq_ = (float)setting_num(s, "mark_haptic_freq", 1.0);
         mark_dir_setting_ = setting_str(s, "mark_dir");
         mirror_exe_ = setting_str(s, "mark_mirror_exe");
         left_handed_ = setting_num(read_file(c), "ctl_left_handed", 0) != 0;
@@ -343,7 +365,7 @@ private:
     }
 
     void make_mark(const std::string& trigger, const std::string& note) {
-        if (in_flight_ >= 2) { API::get()->log_warn("[votv-mark] Mark: skipped (%d captures still being written)", in_flight_.load()); return; }
+        if (in_flight_ >= 2) { API::get()->log_warn("[votv-mark] Mark: skipped (%d captures still being written)", in_flight_.load()); pulse(true); return; }
         SYSTEMTIME st; GetLocalTime(&st);
         const std::string id = votv_marks::folder_name(st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
         char local[64];
@@ -351,7 +373,7 @@ private:
         const fs::path folder = mark_dir() / id;
         std::error_code ec;
         fs::create_directories(folder, ec);
-        if (ec) { API::get()->log_error("[votv-mark] Mark: could not create %s (%s)", folder.string().c_str(), ec.message().c_str()); return; }
+        if (ec) { API::get()->log_error("[votv-mark] Mark: could not create %s (%s)", folder.string().c_str(), ec.message().c_str()); pulse(true); return; }
         ++count_;
 
         // Game and VR state, read now on the game thread.
@@ -370,6 +392,7 @@ private:
 
         API::get()->log_info("[votv-mark] Mark: saved %s | local %s | %s | %s", folder.string().c_str(), local, trigger.c_str(), summary.c_str());
         API::get()->dispatch_lua_event("votv_mark", folder.string().c_str());
+        pulse(false);
 
         // Screenshot and (SteamVR) both eyes off the game thread, then the final mark.json.
         ++in_flight_;
@@ -414,6 +437,7 @@ private:
             write_text(folder / "mark.json", json_body);
             API::get()->log_info("[votv-mark] Mark: screenshot %s %s (%dx%d, %.0f ms)%s", folder.string().c_str(),
                                  s.ok ? "ok" : "FAILED", s.w, s.h, t1 - t0, s.err.empty() ? "" : (" " + s.err).c_str());
+            if (!s.ok || s.all_black) pending_fail_ = true;
             --in_flight_;
         }).detach();
     }
