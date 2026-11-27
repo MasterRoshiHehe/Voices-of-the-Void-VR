@@ -75,6 +75,10 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 ## Log
 
+### 2026-11-27 Claude (community-mods thread): survey of github.com/topics/votv
+
+- Wrote `docs/COMMUNITY-MODS.md`: 17 repos, license and reuse verdict each. Main source is Multivoid (MIT code; its `assets/` paks are not licensed, never copy them). New facts beyond GAME-INTERNALS.md: `hitResult` vs `lookAtActor`, `useSelectedAction`/`setActionIndex` to use without E, `Hold Object(manual)` pickup, main menu = `ui_menu_C` (also the pause menu, `isPause`) via `mainGamemode_C.pause_mainMenu`, 0.10.x off-hand functions, game also offers Vulkan (UEVR is DX11/DX12 only). Research only; game install not touched.
+
 ### 2026-11-27 Claude (controls thread): first in-game runs of the controls plugin (01:34, 01:36), blocked at the content warning
 
 - Run `logs6-11-27_01-34-54` (OpenXR, `-Controls`): **plugin loads in UEVR 1.05** (`[votv-ctl] start`), reads all 21 bindings from Input.ini, settings file read, aim=2 and snap turn set. It went straight to `blocked: no_pad` (no XInput callback yet: nobody had the controllers on). The UEVR menu was open on start; I closed it with Insert.
