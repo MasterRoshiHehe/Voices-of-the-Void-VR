@@ -77,6 +77,13 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 ## Log
 
+### 2026-11-27 Claude (menu thread): dot target #3: UEVR's UI and scene render targets (offline build)
+
+- Run `logs\2026-11-27_02-39-30`: the framework callback fired (`dot: framework texture 2560x1440 fmt 87 (drawing there too)`) and the dot was drawn there, but the user saw it only on the PC monitor ("moving my controller around moves the cursor around on my screen ... not seeing it in my headset"). So neither the Present backbuffer nor UEVR's framework texture is what the 2D screen shows. Framework drawing now off by default.
+- **Next target (built, untested):** in `on_post_slate_draw_window` (right after Slate draws the game's UI, render thread), the dot is drawn into UEVR's own render targets from `API::StereoHook::get_ui_render_target()` (where UEVR redirects Slate: the menus) and `get_scene_render_target()`, via their native D3D11 textures. Each target's size/format/bind flags and RTV creation are logged once; `ptr_dot_ui` / `ptr_dot_scene` switch them. pointer_test 15/15.
+- Fallback if this doesn't show either: a game-drawn UMG widget at the cursor (UEVR Lua: WidgetBlueprintLibrary Create + AddToViewport + SetPositionInViewport), which is in the 2D screen by construction. Needs a UserWidget class with a visible image (none of ours yet); to be prepared if needed.
+- Aim: the OS cursor follows the hand (user, 02:41). What the user sees as "where it points" depends on the 2D screen's real size/placement in the headset, which the calibration mode (`Calibrate-Pointer.bat`) fits from 4 corners. Once a dot is visible in the headset, calibration can be checked against it directly.
+
 ### 2026-11-27 Claude (menu thread): pointer calibration mode ready (offline; waiting for the user)
 
 - Controls run `logs\2026-11-27_02-39-30`: pointer active on the warning screen at 02:40:09; the user's "Proceed" try clicked at u 0.729 v 0.898 and then u 0.744 v 0.574, while Proceed is at about u 0.605 v 0.740 (flat screenshot 02:13). So the default screen model (2 m away, 2 m wide, 16:9, centred at head height) doesn't match where UEVR draws the 2D screen. UEVR 1.05 exposes no 2D-screen size/placement setting (only UI_Distance 2 / UI_Size 2, used as the start guess).
