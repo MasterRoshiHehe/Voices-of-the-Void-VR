@@ -105,6 +105,14 @@ uevr.sdk.callbacks.on_post_engine_tick(function(engine, delta)
         if pcm == nil then return end
         local loc = state.hand:K2_GetComponentLocation()
         local r = state.hand:K2_GetComponentRotation()
+        -- Controller not tracked yet (self-check 02:29: hand reported 403 cm from the head with zero rotation):
+        -- leave the game's own head ray alone.
+        local head = pawn.Camera:K2_GetComponentLocation()
+        if dist(loc, head) > (cfg.hand_max_cm or 150) then
+            if not state.untracked then state.untracked = true; log("hand too far from head (untracked?): using the head ray") end
+            return
+        end
+        if state.untracked then state.untracked = false; log("hand tracked again: ray from the hand") end
         pcm:K2_SetActorLocationAndRotation(loc, r, false, hit, false)
         state.sets = state.sets + 1
         state.t = state.t + delta
