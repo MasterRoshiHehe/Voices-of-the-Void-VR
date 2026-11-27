@@ -40,11 +40,26 @@ end
 
 local DEFAULTS = { gfx_log_interval_s = 10, gfx_reapply_interval_s = 2, gfx_override_enable = 0 }
 
+-- Logs "settings file read: ok N lines / empty / failed" at startup and whenever that result changes,
+-- so a silent fallback to the defaults can't hide (UEVR's fs path rooting is not confirmed yet).
+local last_read_status = nil
+
+local function note_read_status(status)
+    if status ~= last_read_status then
+        last_read_status = status
+        log("settings file read (" .. SETTINGS .. "): " .. status)
+    end
+end
+
 local function read_settings()
     local s = { overrides = {} }
     for k, v in pairs(DEFAULTS) do s[k] = v end
-    local text = try(function() return fs.read(SETTINGS) end, nil)
-    if type(text) ~= "string" then return s end
+    local ok, text = pcall(function() return fs.read(SETTINGS) end)
+    if not ok then note_read_status("failed (" .. tostring(text) .. ")"); return s end
+    if type(text) ~= "string" or text == "" then note_read_status("empty"); return s end
+    local nlines = 0
+    for _ in text:gmatch("[^\r\n]+") do nlines = nlines + 1 end   -- non-empty lines
+    note_read_status("ok " .. nlines .. " lines")
     for raw in (text .. "\n"):gmatch("([^\r\n]*)\r?\n") do
         local line = raw:match("^%s*(.-)%s*$")
         if line ~= "" and line:sub(1, 1) ~= "#" then
