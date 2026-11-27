@@ -77,6 +77,13 @@ One entry per broad workaround; link longer evidence rather than copying logs he
 
 ## Log
 
+### 2026-11-27 Claude (internals-reference thread): full decompile reference in dumps/ (offline, game not launched)
+
+- **Result:** `dumps/INDEX.md` (gitignored, like all of `dumps/`): all 3,074 Blueprints decompiled to readable pseudocode (`dumps/blueprints/`, 0 failures, 31,437 jump targets all on statement boundaries), the UE4SS SDK headers from the 01:31 menu dump copied to `dumps/sdk/`, LuaLS type files (`dumps/lua_types/`, incl. 843 BP classes the menu dump missed), an index of all 20,984 assets, bone trees of all 95 skeletons, player/hand mesh and material properties, and `dumps/uevr_1.05/UEVR_API_1.05.md` (Lua bindings read from the 1.05 DLL and diffed with the nightly: 1.05 has no Lua imgui, no add_script_panel, no file IO).
+- **Facts worth knowing:** `FP_arms_Skeleton` (viewmodel arms) has 22 bones and **no finger bones**; `kerfurOmegaV1_Skeleton` (`mesh_playerVisible`) has full fingers. Keypad = `passwordLock_C` (`focusOn`, `inputNumber`, `playerAnykey`); warning screen = `ui_disclaimer_C`.
+- **Method:** pak read with the earlier thread's `pakread.py`; a small .NET 8 tool on UAssetAPI 1.1.0 (NuGet) in `dumps/_tools/bpdump/`; Python helpers in `dumps/_tools/`. Graph: graphify code-only (no LLM) over C++-shaped BP stubs and the SDK headers in `dumps/graph_src/`.
+- Not done: no fresh in-game UE4SS dump (SDK still menu-time; BP text covers the gap), no UMG widget layout dump. No mod code touched.
+
 ### 2026-11-27 Claude (controls thread): solo check not possible while the headset is off (run 03:31)
 
 - Run `logs/2026-11-27_03-31-*` (`-Controls -Pointer`, 60 s inject delay, menus clicked from the PC while the user was away). UEVR injected at 03:32:11 but **`Could not create openxr system: XR_ERROR_FORM_FACTOR_UNAVAILABLE`**: Virtual Desktop had no headset connected, so the framework never initialized and **no Lua script ran** (0 "Running script" lines). The marks plugin loaded (`[votv-mark] start`). Clicks in the 2D main menu worked after injection (Start game opened the mode dialog). The hand hook, hands and flashlight can't be checked without the headset streaming. Game closed; plugins removed.
