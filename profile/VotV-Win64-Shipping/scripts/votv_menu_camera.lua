@@ -522,8 +522,9 @@ end
 local function pin_enforce()
     if pin_saved == nil then return end
     for _, kv in ipairs(PIN_VALUES) do
-        local now = tostring(get_mod(kv[1]))
-        if now ~= kv[2] and not (kv[2] == "0" and now == "0.000000") then
+        local raw = get_mod(kv[1])
+        local now = tostring(raw)
+        if raw ~= nil and now ~= kv[2] and not (kv[2] == "0" and now == "0.000000") then
             set_mod(kv[1], kv[2])
             if kv[1] == "VR_AimMethod" then pcall(function() uevr.params.vr.set_aim_method(0) end) end
             pin_fix_logs = pin_fix_logs + 1
